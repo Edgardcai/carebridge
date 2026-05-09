@@ -1,0 +1,26 @@
+name: carebridge
+description: CareBridge MVP, a post-discharge recovery reminder and family coordination app.
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  provider: ^6.1.2
+  cupertino_icons: ^1.0.8
+
+  # Role B/C should add current plugin versions when wiring implementations:
+  # firebase_core, firebase_auth, cloud_firestore, firebase_storage
+  # google_mlkit_text_recognition, flutter_local_notifications, fl_chart
+  # image_picker, uuid
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
