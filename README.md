@@ -72,16 +72,6 @@ flutter pub get
 flutter run
 ```
 
-On Zijian's local machine:
-
-```bash
-source ~/.zshenv
-cd /Users/zijiancai/Desktop/hkucsfiles/comp7506/group_project/main_work
-flutter pub get
-flutter devices
-flutter run
-```
-
 Recommended emulator:
 
 ```bash
@@ -334,24 +324,3 @@ manifest metadata, receivers, services, or Gradle plugins, add them under
 - Final report draft outline: `docs/final_report_outline.md`
 - Demo video script: `docs/demo_video_script.md`
 - Requirement trace: `docs/requirements_trace.md`
-
-## GitHub Upload
-
-First-time upload:
-
-```bash
-git init
-git add .
-git commit -m "Initial CareBridge Flutter MVP"
-git remote add origin https://github.com/Edgardcai/carebridge.git
-git branch -M main
-git push -u origin main
-```
-
-After later changes:
-
-```bash
-git add .
-git commit -m "Describe the change"
-git push
-```
