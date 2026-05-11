@@ -138,8 +138,13 @@ class DemoCareRepository implements CareRepository {
     final now = DateTime.now();
     final selected = candidates.where((item) => item.selected).toList();
     final created = <CareTask>[];
+    final byPatient = <String, FamilyMember?>{};
 
     for (final candidate in selected) {
+      final defaultAssignee = byPatient.putIfAbsent(
+        candidate.patientId,
+        () => _defaultAssigneeFor(candidate.patientId),
+      );
       final task = CareTask(
         id: _id('task'),
         patientId: candidate.patientId,
@@ -152,7 +157,8 @@ class DemoCareRepository implements CareRepository {
             ? RepeatRule.daily
             : RepeatRule.none,
         remindMinutesBefore: candidate.type == OcrCandidateType.appointment ? 1440 : 0,
-        assigneeName: 'You',
+        assigneeId: defaultAssignee?.id,
+        assigneeName: defaultAssignee?.displayName ?? 'Unassigned',
         sourceLabel: 'Discharge_Instructions_DrSmith.jpg',
         createdAt: now,
         updatedAt: now,
@@ -361,17 +367,66 @@ class DemoCareRepository implements CareRepository {
     return a.year == b.year && a.month == b.month && a.day == b.day;
   }
 
-  static String _titleFromCandidate(OcrCandidate candidate) {
+  String _titleFromCandidate(OcrCandidate candidate) {
+    final parsed = _extractTitleFromText(candidate.extractedText, candidate.type);
+    if (parsed != null && parsed.isNotEmpty) {
+      return parsed;
+    }
     switch (candidate.type) {
       case OcrCandidateType.medication:
-        return 'Medication from scan';
+        return 'Medication task';
       case OcrCandidateType.appointment:
-        return 'Follow-up appointment';
+        return 'Clinic appointment';
       case OcrCandidateType.instruction:
         return 'Recovery instruction';
       case OcrCandidateType.other:
         return 'Scanned note';
     }
+  }
+
+  FamilyMember? _defaultAssigneeFor(String patientId) {
+    final members = _bundle.familyMembers.where((m) => m.patientId == patientId).toList();
+    for (final member in members) {
+      if (member.role == FamilyRole.primaryCarer) return member;
+    }
+    for (final member in members) {
+      if (member.role == FamilyRole.patient) return member;
+    }
+    return members.isEmpty ? null : members.first;
+  }
+
+  String? _extractTitleFromText(String raw, OcrCandidateType type) {
+    var text = raw.trim();
+    if (text.isEmpty) return null;
+    text = text.replaceAll(RegExp(r'\s+'), ' ');
+
+    switch (type) {
+      case OcrCandidateType.medication:
+        final med = RegExp(
+          r'([A-Za-z][A-Za-z0-9\-]*(?:\s+[A-Za-z][A-Za-z0-9\-]*){0,2}\s+\d+(?:\.\d+)?\s?(?:mg|g|ml))',
+          caseSensitive: false,
+        ).firstMatch(text);
+        if (med != null) return med.group(1);
+        final take = RegExp(r'(?:take|medicine|drug)\s+([A-Za-z][A-Za-z0-9\- ]{2,30})', caseSensitive: false)
+            .firstMatch(text);
+        if (take != null) return take.group(1)?.trim();
+        break;
+      case OcrCandidateType.appointment:
+        final clinic = RegExp(r'(?:appointment|follow[- ]?up)\s+(?:with\s+)?([A-Za-z][A-Za-z .-]{2,40})', caseSensitive: false)
+            .firstMatch(text);
+        if (clinic != null) return 'Appointment: ${clinic.group(1)!.trim()}';
+        break;
+      case OcrCandidateType.instruction:
+        final verb = RegExp(r'^(walk|exercise|stretch|physio)\b', caseSensitive: false).firstMatch(text);
+        if (verb != null) return '${verb.group(1)![0].toUpperCase()}${verb.group(1)!.substring(1)} plan';
+        break;
+      case OcrCandidateType.other:
+        break;
+    }
+
+    final sentence = text.split(RegExp(r'[.;,]')).first.trim();
+    if (sentence.length <= 48) return sentence;
+    return '${sentence.substring(0, 45)}...';
   }
 
   static TaskType _typeFromCandidate(OcrCandidateType type) {

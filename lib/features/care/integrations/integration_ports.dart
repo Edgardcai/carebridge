@@ -84,15 +84,6 @@ abstract class NotificationPort {
   Future<void> rescheduleAll(List<CareTask> tasks);
 }
 
-/// Role C can swap the temporary custom painter with fl_chart using this data.
-class SymptomTrendPoint {
-  const SymptomTrendPoint({
-    required this.date,
-    required this.painLevel,
-    required this.temperatureC,
-  });
-
-  final DateTime date;
-  final int painLevel;
-  final double temperatureC;
+abstract class DisposableIntegration {
+  Future<void> disposeIntegration();
 }

@@ -1,7 +1,10 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 
 import '../../../core/routing/app_router.dart';
@@ -658,7 +661,7 @@ class HomeScreen extends StatelessWidget {
             _ActionTile(
               icon: Icons.document_scanner_outlined,
               label: 'Scan doc',
-              onTap: () => Navigator.of(context).pushNamed(AppRoutes.scanReview),
+              onTap: () => Navigator.of(context, rootNavigator: true).pushNamed(AppRoutes.scanReview),
             ),
             _ActionTile(
               icon: Icons.monitor_heart,
@@ -1109,20 +1112,76 @@ class OcrReviewScreen extends StatefulWidget {
 }
 
 class _OcrReviewScreenState extends State<OcrReviewScreen> {
-  late List<OcrCandidate> _candidates;
+  List<OcrCandidate> _candidates = const [];
+  final _picker = ImagePicker();
+  bool _isScanning = false;
 
   @override
   void initState() {
     super.initState();
-    _candidates = context.read<CareStore>().ocrCandidates;
+    _candidates = List<OcrCandidate>.from(context.read<CareStore>().ocrCandidates);
+  }
+
+  Future<void> _scanDocument(ImageSource source) async {
+    final patient = context.read<CareStore>().selectedPatient;
+    if (patient == null) {
+      _showSnack(context, 'Create/select a patient first');
+      return;
+    }
+    try {
+      final image = await _picker.pickImage(source: source);
+      if (!mounted) {
+        return;
+      }
+      if (image == null) {
+        _showSnack(context, 'No image selected');
+        return;
+      }
+      setState(() => _isScanning = true);
+      final count =
+          await context.read<CareStore>().scanOcrCandidatesFromImage(image.path);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _candidates =
+            List<OcrCandidate>.from(context.read<CareStore>().ocrCandidates);
+      });
+      _showSnack(context, 'Scanned $count candidate rows');
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      _showSnack(
+        context,
+        'Open scan failed. Please check camera/photo permission and try again. Details: $error',
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isScanning = false);
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    context.watch<CareStore>();
     final selectedCount = _candidates.where((item) => item.selected).length;
 
     return Scaffold(
+      backgroundColor: AppColors.surface,
       appBar: AppBar(
+        leading: IconButton(
+          icon: const Icon(Icons.close),
+          tooltip: 'Close',
+          onPressed: () async {
+            final nav = Navigator.of(context, rootNavigator: true);
+            if (await nav.maybePop()) {
+              return;
+            }
+            nav.pushNamedAndRemoveUntil(AppRoutes.home, (_) => false);
+          },
+        ),
         title: const Text('Review scan'),
         actions: [
           IconButton(
@@ -1132,92 +1191,115 @@ class _OcrReviewScreenState extends State<OcrReviewScreen> {
           ),
         ],
       ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            Expanded(
-              child: ListView(
-                padding: const EdgeInsets.all(16),
-                children: [
-                  const _NoticeCard(
-                    icon: Icons.check_circle,
-                    title: 'Scan successful',
-                    body:
-                        'We found 3 possible recovery tasks. Edit text or uncheck items before creating tasks.',
+      bottomNavigationBar: Material(
+        elevation: 6,
+        color: AppColors.surfaceWhite,
+        child: SafeArea(
+          top: false,
+          minimum: EdgeInsets.zero,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '$selectedCount items selected',
+                    style: const TextStyle(fontWeight: FontWeight.w700),
                   ),
-                  const SizedBox(height: 12),
-                  Card(
-                    child: Container(
-                      height: 156,
-                      alignment: Alignment.center,
-                      padding: const EdgeInsets.all(16),
-                      child: const Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.document_scanner, size: 44, color: AppColors.primary),
-                          SizedBox(height: 8),
-                          Text(
-                            'Discharge_Instructions_DrSmith.jpg',
-                            style: TextStyle(fontWeight: FontWeight.w800),
-                          ),
-                          Text('Today, 10:42 AM'),
-                        ],
-                      ),
+                ),
+                const SizedBox(width: 12),
+                Flexible(
+                  child: FilledButton.icon(
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size(0, 48),
                     ),
-                  ),
-                  const SizedBox(height: 12),
-                  ..._candidates.asMap().entries.map(
-                    (entry) => _OcrCandidateCard(
-                      candidate: entry.value,
-                      onChanged: (candidate) {
-                        setState(() => _candidates[entry.key] = candidate);
-                      },
-                    ),
-                  ),
-                  OutlinedButton.icon(
-                    onPressed: () => Navigator.of(context).pushNamed(AppRoutes.taskForm),
-                    icon: const Icon(Icons.add),
-                    label: const Text('Add another task manually'),
-                  ),
-                ],
-              ),
-            ),
-            Container(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
-              decoration: const BoxDecoration(
-                color: AppColors.surfaceWhite,
-                border: Border(top: BorderSide(color: Color(0xFFE0E3E1))),
-              ),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      '$selectedCount items selected',
-                      style: const TextStyle(fontWeight: FontWeight.w700),
-                    ),
-                  ),
-                  FilledButton.icon(
                     onPressed: selectedCount == 0
                         ? null
                         : () async {
-                            final count = await context
-                                .read<CareStore>()
-                                .createTasksFromOcr(_candidates);
+                            final nav = Navigator.of(context, rootNavigator: true);
+                            final count =
+                                await context.read<CareStore>().createTasksFromOcr(_candidates);
                             if (!context.mounted) {
                               return;
                             }
                             _showSnack(context, 'Added $count tasks to plan');
-                            Navigator.of(context)
-                                .pushNamedAndRemoveUntil(AppRoutes.tasks, (route) => false);
+                            nav.pushNamedAndRemoveUntil(AppRoutes.tasks, (_) => false);
                           },
                     icon: const Icon(Icons.arrow_forward),
                     label: const Text('Create tasks'),
                   ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          const _NoticeCard(
+            icon: Icons.check_circle,
+            title: 'Review scan results',
+            body:
+                'Use Camera or Gallery to read a discharge note. Confirm lines below before creating tasks.',
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: _isScanning ? null : () => _scanDocument(ImageSource.camera),
+                  icon: const Icon(Icons.photo_camera_outlined),
+                  label: Text(_isScanning ? 'Scanning...' : 'Camera'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _isScanning ? null : () => _scanDocument(ImageSource.gallery),
+                  icon: const Icon(Icons.photo_library_outlined),
+                  label: const Text('Gallery'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Card(
+            child: Container(
+              height: 156,
+              alignment: Alignment.center,
+              padding: const EdgeInsets.all(16),
+              child: const Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.document_scanner, size: 44, color: AppColors.primary),
+                  SizedBox(height: 8),
+                  Text(
+                    'Discharge sheet example',
+                    style: TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  Text('Choose one image with clear text.'),
                 ],
               ),
             ),
-          ],
-        ),
+          ),
+          const SizedBox(height: 12),
+          ..._candidates.asMap().entries.map(
+                (entry) => _OcrCandidateCard(
+                  candidate: entry.value,
+                  onChanged: (candidate) {
+                    setState(() => _candidates[entry.key] = candidate);
+                  },
+                ),
+              ),
+          OutlinedButton.icon(
+            onPressed: () =>
+                Navigator.of(context, rootNavigator: true).pushNamed(AppRoutes.taskForm),
+            icon: const Icon(Icons.add),
+            label: const Text('Add another task manually'),
+          ),
+          const SizedBox(height: 24),
+        ],
       ),
     );
   }
@@ -1234,6 +1316,9 @@ class _SymptomLogScreenState extends State<SymptomLogScreen> {
   late int _pain;
   late TextEditingController _temp;
   late TextEditingController _notes;
+  late List<String> _photoUrls;
+  final List<String> _newPhotoPaths = [];
+  final _picker = ImagePicker();
 
   @override
   void initState() {
@@ -1242,6 +1327,7 @@ class _SymptomLogScreenState extends State<SymptomLogScreen> {
     _pain = log?.painLevel ?? 4;
     _temp = TextEditingController(text: (log?.temperatureC ?? 36.8).toStringAsFixed(1));
     _notes = TextEditingController(text: log?.notes ?? '');
+    _photoUrls = [...?log?.photoUrls];
   }
 
   @override
@@ -1257,7 +1343,10 @@ class _SymptomLogScreenState extends State<SymptomLogScreen> {
           painLevel: _pain,
           temperatureC: double.tryParse(_temp.text.trim()) ?? 36.8,
           notes: _notes.text.trim(),
+          preservedPhotoUrls: _photoUrls,
+          localPhotoPaths: _newPhotoPaths,
         );
+    _newPhotoPaths.clear();
     if (mounted) {
       _showSnack(context, 'Saved');
     }
@@ -1343,21 +1432,42 @@ class _SymptomLogScreenState extends State<SymptomLogScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const _SectionHeader(icon: Icons.photo_camera_outlined, title: 'Visual progress'),
-                Row(
-                  children: List.generate(
-                    3,
-                    (index) => Expanded(
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    GestureDetector(
+                      onTap: () async {
+                        final picked = await _picker.pickImage(source: ImageSource.gallery);
+                        if (picked == null) {
+                          return;
+                        }
+                        setState(() => _newPhotoPaths.add(picked.path));
+                      },
                       child: Container(
-                        height: 72,
-                        margin: EdgeInsets.only(right: index == 2 ? 0 : 8),
+                        width: 84,
+                        height: 84,
                         decoration: BoxDecoration(
                           color: AppColors.surfaceContainer,
                           borderRadius: BorderRadius.circular(12),
                         ),
-                        child: Icon(index == 0 ? Icons.add_a_photo : Icons.image_outlined),
+                        child: const Icon(Icons.add_a_photo),
                       ),
                     ),
-                  ),
+                    ..._photoUrls.asMap().entries.map(
+                      (entry) => _SymptomPhotoThumb(
+                        imagePath: entry.value,
+                        onRemove: () => setState(() => _photoUrls.removeAt(entry.key)),
+                      ),
+                    ),
+                    ..._newPhotoPaths.asMap().entries.map(
+                      (entry) => _SymptomPhotoThumb(
+                        imagePath: entry.value,
+                        pending: true,
+                        onRemove: () => setState(() => _newPhotoPaths.removeAt(entry.key)),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -1578,7 +1688,7 @@ class SettingsScreen extends StatelessWidget {
                 onChanged: store.setNotificationsEnabled,
                 secondary: const Icon(Icons.medication_outlined),
                 title: const Text('Medication reminders'),
-                subtitle: const Text('Role C connects local notifications here.'),
+                subtitle: const Text('Uses on-device reminders when enabled.'),
               ),
               const Divider(height: 1),
               SwitchListTile(
@@ -1586,6 +1696,44 @@ class SettingsScreen extends StatelessWidget {
                 onChanged: store.setNotificationsEnabled,
                 secondary: const Icon(Icons.calendar_today_outlined),
                 title: const Text('Visit alerts'),
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.notifications_active_outlined),
+                title: const Text('Send instant test notification'),
+                subtitle: const Text(
+                  'Should appear immediately in notification shade.',
+                ),
+                onTap: () async {
+                  final ok = await store.showInstantTestLocalNotification();
+                  if (!context.mounted) {
+                    return;
+                  }
+                  _showSnack(
+                    context,
+                    ok ? 'Sent instant test notification.' : 'Local notifications are not configured.',
+                  );
+                },
+              ),
+              const Divider(height: 1),
+              ListTile(
+                leading: const Icon(Icons.schedule_send_outlined),
+                title: const Text('Test reminder in 5 seconds'),
+                subtitle: const Text(
+                  'Use this to verify notification permission and alarms. Put the app in the background after tapping.',
+                ),
+                onTap: () async {
+                  final ok = await store.scheduleTestLocalNotification();
+                  if (!context.mounted) {
+                    return;
+                  }
+                  _showSnack(
+                    context,
+                    ok
+                        ? 'Scheduled test reminder. Check the notification shade in ~5s.'
+                        : 'Local notifications are not configured.',
+                  );
+                },
               ),
             ],
           ),
@@ -1665,56 +1813,177 @@ class MiniTrendChart extends StatelessWidget {
     if (logs.isEmpty) {
       return const Center(child: Text('No symptom data yet'));
     }
-    return CustomPaint(
-      painter: _TrendPainter(logs),
-      child: const SizedBox.expand(),
+    final points = logs.length > 7 ? logs.sublist(logs.length - 7) : logs;
+    final tempMin = points
+        .map((log) => log.temperatureC)
+        .reduce((a, b) => a < b ? a : b);
+    final tempMax = points
+        .map((log) => log.temperatureC)
+        .reduce((a, b) => a > b ? a : b);
+    final rightMin = (tempMin - 0.4).clamp(34.0, 42.0);
+    final rightMax = (tempMax + 0.4).clamp(34.0, 42.0);
+    final tempSpan = (rightMax - rightMin).abs() < 0.001 ? 1.0 : (rightMax - rightMin);
+    return LineChart(
+      LineChartData(
+        minY: 0,
+        maxY: 10,
+        gridData: const FlGridData(show: true, drawVerticalLine: false),
+        borderData: FlBorderData(show: true),
+        titlesData: FlTitlesData(
+          topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          bottomTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              interval: 1,
+              getTitlesWidget: (value, meta) {
+                final i = value.toInt();
+                if (i < 0 || i >= points.length) {
+                  return const SizedBox.shrink();
+                }
+                final d = points[i].date;
+                return Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text('${d.month}/${d.day}', style: const TextStyle(fontSize: 10)),
+                );
+              },
+            ),
+          ),
+          leftTitles: AxisTitles(
+            sideTitles: SideTitles(
+              showTitles: true,
+              interval: 2,
+              reservedSize: 24,
+              getTitlesWidget: (value, meta) => Text(
+                value.toInt().toString(),
+                style: const TextStyle(fontSize: 10, color: AppColors.textSecondary),
+              ),
+            ),
+          ),
+          rightTitles: AxisTitles(
+            axisNameWidget: const Padding(
+              padding: EdgeInsets.only(bottom: 4),
+              child: Text('Temp C', style: TextStyle(fontSize: 10)),
+            ),
+            sideTitles: SideTitles(
+              showTitles: true,
+              reservedSize: 34,
+              interval: 0.5,
+              getTitlesWidget: (value, meta) => Text(
+                (rightMin + (value / 10) * tempSpan).toStringAsFixed(1),
+                style: const TextStyle(fontSize: 9, color: AppColors.textSecondary),
+              ),
+            ),
+          ),
+        ),
+        lineTouchData: const LineTouchData(enabled: true),
+        lineBarsData: [
+          LineChartBarData(
+            spots: [
+              for (var i = 0; i < points.length; i++)
+                FlSpot(i.toDouble(), points[i].painLevel.toDouble()),
+            ],
+            isCurved: true,
+            color: AppColors.primary,
+            barWidth: 3,
+            dotData: const FlDotData(show: true),
+            belowBarData: BarAreaData(
+              show: true,
+              color: AppColors.primary.withValues(alpha: 0.12),
+            ),
+          ),
+          LineChartBarData(
+            spots: [
+              for (var i = 0; i < points.length; i++)
+                FlSpot(
+                  i.toDouble(),
+                  ((points[i].temperatureC - rightMin) / tempSpan) * 10,
+                ),
+            ],
+            isCurved: true,
+            color: AppColors.warning,
+            barWidth: 2,
+            dotData: const FlDotData(show: true),
+            dashArray: const [6, 3],
+          ),
+        ],
+      ),
     );
   }
 }
 
-class _TrendPainter extends CustomPainter {
-  _TrendPainter(this.logs);
+class _SymptomPhotoThumb extends StatelessWidget {
+  const _SymptomPhotoThumb({
+    required this.imagePath,
+    required this.onRemove,
+    this.pending = false,
+  });
 
-  final List<SymptomLog> logs;
+  final String imagePath;
+  final VoidCallback onRemove;
+  final bool pending;
 
   @override
-  void paint(Canvas canvas, Size size) {
-    final axisPaint = Paint()
-      ..color = AppColors.outline.withValues(alpha: 0.4)
-      ..strokeWidth = 1;
-    final linePaint = Paint()
-      ..color = AppColors.primary
-      ..strokeWidth = 3
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round;
-    final fillPaint = Paint()..color = AppColors.primary;
-
-    final chart = Rect.fromLTWH(8, 8, size.width - 16, size.height - 28);
-    canvas.drawLine(chart.bottomLeft, chart.bottomRight, axisPaint);
-    canvas.drawLine(chart.topLeft, chart.bottomLeft, axisPaint);
-
-    if (logs.length == 1) {
-      final point = Offset(chart.left, chart.bottom - logs.first.painLevel / 10 * chart.height);
-      canvas.drawCircle(point, 5, fillPaint);
-      return;
-    }
-
-    final path = Path();
-    for (var i = 0; i < logs.length; i++) {
-      final x = chart.left + (chart.width / (logs.length - 1)) * i;
-      final y = chart.bottom - (logs[i].painLevel / 10) * chart.height;
-      if (i == 0) {
-        path.moveTo(x, y);
-      } else {
-        path.lineTo(x, y);
-      }
-      canvas.drawCircle(Offset(x, y), 4, fillPaint);
-    }
-    canvas.drawPath(path, linePaint);
+  Widget build(BuildContext context) {
+    final isNetworkImage =
+        imagePath.startsWith('http://') || imagePath.startsWith('https://');
+    return Stack(
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(12),
+          child: (isNetworkImage
+              ? Image.network(
+                  imagePath,
+                  width: 84,
+                  height: 84,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => _buildBrokenImage(),
+                )
+              : Image.file(
+                  File(imagePath),
+                  width: 84,
+                  height: 84,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => _buildBrokenImage(),
+                )),
+        ),
+        Positioned(
+          right: 2,
+          top: 2,
+          child: GestureDetector(
+            onTap: onRemove,
+            child: Container(
+              decoration: const BoxDecoration(color: Colors.black54, shape: BoxShape.circle),
+              padding: const EdgeInsets.all(2),
+              child: const Icon(Icons.close, color: Colors.white, size: 14),
+            ),
+          ),
+        ),
+        if (pending)
+          Positioned(
+            left: 4,
+            bottom: 4,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+              color: Colors.black54,
+              child: const Text(
+                'Pending',
+                style: TextStyle(color: Colors.white, fontSize: 10),
+              ),
+            ),
+          ),
+      ],
+    );
   }
 
-  @override
-  bool shouldRepaint(covariant _TrendPainter oldDelegate) => oldDelegate.logs != logs;
+  Widget _buildBrokenImage() {
+    return Container(
+      width: 84,
+      height: 84,
+      color: AppColors.surfaceContainer,
+      alignment: Alignment.center,
+      child: const Icon(Icons.broken_image_outlined),
+    );
+  }
 }
 
 class _PatientHeader extends StatelessWidget {
@@ -2108,6 +2377,34 @@ class _OcrCandidateCard extends StatelessWidget {
                 maxLines: 4,
                 decoration: const InputDecoration(labelText: 'Extracted text'),
                 onChanged: (value) => onChanged(candidate.copyWith(extractedText: value)),
+              ),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<OcrCandidateType>(
+                initialValue: candidate.type,
+                decoration: const InputDecoration(labelText: 'Detected type'),
+                items: const [
+                  DropdownMenuItem(
+                    value: OcrCandidateType.medication,
+                    child: Text('Medication'),
+                  ),
+                  DropdownMenuItem(
+                    value: OcrCandidateType.appointment,
+                    child: Text('Appointment'),
+                  ),
+                  DropdownMenuItem(
+                    value: OcrCandidateType.instruction,
+                    child: Text('Instruction'),
+                  ),
+                  DropdownMenuItem(
+                    value: OcrCandidateType.other,
+                    child: Text('Other'),
+                  ),
+                ],
+                onChanged: (value) {
+                  if (value != null) {
+                    onChanged(candidate.copyWith(type: value));
+                  }
+                },
               ),
               if (candidate.scheduledAt != null) ...[
                 const SizedBox(height: 8),

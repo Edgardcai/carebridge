@@ -1,12 +1,26 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../data/care_repository.dart';
 import '../domain/models.dart';
+import '../integrations/integration_ports.dart';
+import '../integrations/local_notification_port.dart';
 
 class CareStore extends ChangeNotifier {
-  CareStore(this._repository);
+  CareStore(
+    this._repository, {
+    OcrPort? ocrPort,
+    NotificationPort? notificationPort,
+    StoragePort? storagePort,
+  })  : _ocrPort = ocrPort,
+        _notificationPort = notificationPort,
+        _storagePort = storagePort;
 
   final CareRepository _repository;
+  final OcrPort? _ocrPort;
+  final NotificationPort? _notificationPort;
+  final StoragePort? _storagePort;
 
   CareBundle _bundle = const CareBundle(
     user: null,
@@ -138,11 +152,34 @@ class CareStore extends ChangeNotifier {
         .toList(growable: false);
   }
 
+  /// Optional: verify local notifications on-device (Settings).
+  Future<bool> scheduleTestLocalNotification() async {
+    final port = _notificationPort;
+    if (port is LocalNotificationPort) {
+      await port.scheduleTestPingIn(const Duration(seconds: 5));
+      return true;
+    }
+    return false;
+  }
+
+  Future<bool> showInstantTestLocalNotification() async {
+    final port = _notificationPort;
+    if (port is LocalNotificationPort) {
+      await port.showInstantTest();
+      return true;
+    }
+    return false;
+  }
+
   Future<void> load() async {
     _setLoading(true);
     try {
       _bundle = await _repository.load();
       _selectedPatientId = _bundle.patients.isEmpty ? null : _bundle.patients.first.id;
+      if (_notificationPort != null) {
+        await _notificationPort.requestPermission();
+        await _notificationPort.rescheduleAll(_pendingTasksForSelectedPatient());
+      }
       _lastError = null;
     } catch (error) {
       _lastError = error.toString();
@@ -176,6 +213,9 @@ class CareStore extends ChangeNotifier {
   Future<void> selectPatient(String patientId) async {
     _selectedPatientId = patientId;
     await _repository.selectPatient(patientId);
+    if (_notificationPort != null) {
+      await _notificationPort.rescheduleAll(_pendingTasksForSelectedPatient());
+    }
     notifyListeners();
   }
 
@@ -203,6 +243,13 @@ class CareStore extends ChangeNotifier {
       next[index] = saved;
     }
     _bundle = _bundle.copyWith(tasks: next);
+    if (_notificationPort != null && _notificationsEnabled) {
+      if (saved.status == TaskStatus.pending) {
+        await _notificationPort.scheduleTaskReminder(saved);
+      } else {
+        await _notificationPort.cancelTaskReminder(saved.id);
+      }
+    }
     notifyListeners();
   }
 
@@ -211,6 +258,9 @@ class CareStore extends ChangeNotifier {
     _bundle = _bundle.copyWith(
       tasks: _bundle.tasks.where((task) => task.id != taskId).toList(),
     );
+    if (_notificationPort != null) {
+      await _notificationPort.cancelTaskReminder(taskId);
+    }
     notifyListeners();
   }
 
@@ -222,6 +272,13 @@ class CareStore extends ChangeNotifier {
       next[index] = saved;
     }
     _bundle = _bundle.copyWith(tasks: next);
+    if (_notificationPort != null) {
+      if (status == TaskStatus.pending && _notificationsEnabled) {
+        await _notificationPort.scheduleTaskReminder(saved);
+      } else {
+        await _notificationPort.cancelTaskReminder(taskId);
+      }
+    }
     notifyListeners();
   }
 
@@ -230,6 +287,8 @@ class CareStore extends ChangeNotifier {
     required int painLevel,
     required double temperatureC,
     required String notes,
+    List<String> preservedPhotoUrls = const [],
+    List<String> localPhotoPaths = const [],
   }) async {
     final patient = selectedPatient;
     if (patient == null) {
@@ -237,6 +296,19 @@ class CareStore extends ChangeNotifier {
     }
 
     final existing = symptomLogs.where((log) => _sameDay(log.date, date)).firstOrNull;
+    final uploadedUrls = <String>[];
+    for (final localPath in localPhotoPaths) {
+      if (_storagePort == null) {
+        uploadedUrls.add(localPath);
+        continue;
+      }
+      final uploaded = await _storagePort.uploadSymptomPhoto(
+        patientId: patient.id,
+        logDate: date,
+        localPath: localPath,
+      );
+      uploadedUrls.add(uploaded);
+    }
     final now = DateTime.now();
     final log = SymptomLog(
       id: existing?.id ?? '',
@@ -245,7 +317,7 @@ class CareStore extends ChangeNotifier {
       painLevel: painLevel,
       temperatureC: temperatureC,
       notes: notes,
-      photoUrls: existing?.photoUrls ?? const [],
+      photoUrls: [...preservedPhotoUrls, ...uploadedUrls],
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     );
@@ -267,8 +339,33 @@ class CareStore extends ChangeNotifier {
   Future<int> createTasksFromOcr(List<OcrCandidate> candidates) async {
     final created = await _repository.createTasksFromOcrCandidates(candidates);
     _bundle = _bundle.copyWith(tasks: [..._bundle.tasks, ...created]);
+    if (_notificationPort != null && _notificationsEnabled) {
+      for (final task in created) {
+        if (task.status == TaskStatus.pending) {
+          await _notificationPort.scheduleTaskReminder(task);
+        }
+      }
+    }
     notifyListeners();
     return created.length;
+  }
+
+  Future<int> scanOcrCandidatesFromImage(String localImagePath) async {
+    final patient = selectedPatient;
+    if (patient == null) return 0;
+    if (_ocrPort == null) {
+      throw Exception('OCR service is not configured.');
+    }
+    final candidates = await _ocrPort.extractTaskCandidates(
+      patientId: patient.id,
+      localImagePath: localImagePath,
+    );
+    _bundle = _bundle.copyWith(ocrCandidates: [
+      ..._bundle.ocrCandidates.where((item) => item.patientId != patient.id),
+      ...candidates,
+    ]);
+    notifyListeners();
+    return candidates.length;
   }
 
   CareTask? taskById(String taskId) {
@@ -328,6 +425,15 @@ class CareStore extends ChangeNotifier {
 
   void setNotificationsEnabled(bool value) {
     _notificationsEnabled = value;
+    if (_notificationPort != null) {
+      if (value) {
+        unawaited(_notificationPort.rescheduleAll(_pendingTasksForSelectedPatient()));
+      } else {
+        for (final task in _pendingTasksForSelectedPatient()) {
+          unawaited(_notificationPort.cancelTaskReminder(task.id));
+        }
+      }
+    }
     notifyListeners();
   }
 
@@ -355,6 +461,23 @@ class CareStore extends ChangeNotifier {
 
   static bool _sameDay(DateTime a, DateTime b) {
     return a.year == b.year && a.month == b.month && a.day == b.day;
+  }
+
+  List<CareTask> _pendingTasksForSelectedPatient() {
+    final patient = selectedPatient;
+    if (patient == null) return const [];
+    return _bundle.tasks
+        .where((task) => task.patientId == patient.id && task.status == TaskStatus.pending)
+        .toList(growable: false);
+  }
+
+  @override
+  void dispose() {
+    final ocrPort = _ocrPort;
+    if (ocrPort is DisposableIntegration) {
+      unawaited((ocrPort as DisposableIntegration).disposeIntegration());
+    }
+    super.dispose();
   }
 }
 

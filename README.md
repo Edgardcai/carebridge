@@ -5,9 +5,9 @@ It focuses on recovery reminders, symptom logging, family coordination, and
 handoff points for Firebase, OCR, local notifications, photo upload, and
 trend charts.
 
-This repository currently contains role A's front-end/business framework.
-Role B and role C can work against the interfaces documented below without
-rewriting the current UI.
+The app includes role A's presentation and state layer, role C's ML Kit OCR,
+local notifications, symptom chart, and local photo paths; role B can swap in
+Firebase behind the same interfaces without rewriting the UI wholesale.
 
 ## Current Status
 
@@ -27,14 +27,21 @@ Completed in this version:
 - Integration contracts for Firebase, ML Kit OCR, local notifications,
   photo storage, and `fl_chart`.
 - Supporting docs for final report, requirement trace, and demo video script.
+- **Role C (native / algorithm):** ML Kit text recognition in `MlKitOcrPort`
+  (line normalization, keyword classification, simple time parsing) wired on
+  `OcrReviewScreen` with camera and gallery via `image_picker`.
+- Android local notifications via `LocalNotificationPort` (`flutter_local_notifications`,
+  `timezone`, exact idle scheduling) integrated in `CareStore` (permission on load,
+  schedule / cancel / reschedule with task and patient changes).
+- Symptom **past 7 days** pain trend chart using `fl_chart` in `MiniTrendChart`.
+- `LocalStoragePort` keeps picked symptom photos as local file paths until role B
+  provides cloud `StoragePort`.
 
 Not completed yet:
 
-- Real Firebase Auth/Firestore/Storage implementation.
-- Real ML Kit OCR image parsing.
-- Real Android local notification scheduling.
-- Real image picker/photo upload flow.
-- `fl_chart` replacement for the temporary symptom sparkline.
+- Real Firebase Auth/Firestore/Storage implementation (role B).
+- Cloud upload URLs for discharge / symptom photos (Firebase Storage + role B
+  `StoragePort` implementation).
 
 ## Tech Stack
 
@@ -44,22 +51,9 @@ Not completed yet:
 - State management: `provider`
 - Current data source: local demo repository
 
-Role B/C should add plugin dependencies only when implementing their parts:
-
-```yaml
-# Role B
-firebase_core
-firebase_auth
-cloud_firestore
-firebase_storage
-
-# Role C
-google_mlkit_text_recognition
-flutter_local_notifications
-fl_chart
-image_picker
-uuid
-```
+Role B should add Firebase packages when implementing the cloud layer. Role C
+dependencies are already listed in `pubspec.yaml` (`google_mlkit_text_recognition`,
+`flutter_local_notifications`, `fl_chart`, `image_picker`, `uuid`, `timezone`).
 
 ## Run Locally
 
@@ -291,9 +285,8 @@ Expected integration points:
   schedule after `CareStore.saveTask`, cancel after task completion/delete,
   and reschedule when task time/repeat rule changes.
 - Chart:
-  replace internals of `MiniTrendChart` in
-  `lib/features/care/presentation/screens.dart` with `fl_chart`; keep the
-  constructor `MiniTrendChart({required List<SymptomLog> logs})`.
+  `MiniTrendChart` in `lib/features/care/presentation/screens.dart` uses
+  `fl_chart`; keep the constructor `MiniTrendChart({required List<SymptomLog> logs})`.
 - Photos:
   use `image_picker`, upload with `StoragePort.uploadSymptomPhoto`, save the
   returned URL/path in `SymptomLog.photoUrls`.
@@ -302,6 +295,12 @@ Detailed OCR, notification, chart, and photo requirements are in:
 
 ```text
 docs/native_integration.md
+```
+
+Role C handoff for teammates (Chinese, ports, manifest, test steps):
+
+```text
+docs/role_c_integration.md
 ```
 
 ## Android Notes

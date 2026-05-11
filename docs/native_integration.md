@@ -78,14 +78,21 @@ Android manifest already reserves:
 - `SCHEDULE_EXACT_ALARM`
 - `READ_MEDIA_IMAGES`
 
-If `flutter_local_notifications` requires receivers or extra manifest metadata
-for the chosen version, add them in `android/app/src/main/AndroidManifest.xml`.
+Scheduled local notifications require receivers in
+`android/app/src/main/AndroidManifest.xml` (already added in this repo):
+
+- `com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver`
+- `com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver`
+  (with `BOOT_COMPLETED` / `MY_PACKAGE_REPLACED` intent filters)
+- `com.dexterous.flutterlocalnotifications.ActionBroadcastReceiver`
+- Permission `RECEIVE_BOOT_COMPLETED`
+
+See `docs/role_c_integration.md` for Role A/B handoff and test steps.
 
 ## 3. fl_chart trend chart
 
-Current UI uses a lightweight `CustomPaint` sparkline in `MiniTrendChart` so
-role A can run without chart dependencies. Replace only the internals of
-`MiniTrendChart` with `fl_chart` and keep its public constructor:
+`MiniTrendChart` uses `fl_chart` (`LineChart`) for the last seven days of pain
+levels. Keep this public constructor stable for any future styling tweaks:
 
 ```dart
 class MiniTrendChart extends StatelessWidget {
@@ -97,8 +104,9 @@ class MiniTrendChart extends StatelessWidget {
 Expected chart:
 
 - Last 7 days, oldest to newest.
-- Pain line: 0 to 10 y-axis.
-- Optional temperature toggle can be added after pain chart works.
+- Pain line: 0 to 10 y-axis (left).
+- Temperature shown as a second line mapped to the same vertical space with a
+  right-axis style label (see implementation in `MiniTrendChart`).
 - Empty state remains visible when `logs.isEmpty`.
 
 ## 4. Photo picking and upload

@@ -18,3 +18,7 @@ android/app/release
 firebase_options.dart
 google-services.json
 GoogleService-Info.plist
+
+# Accidental duplicate plugin lockfiles (Finder copies)
+.flutter-plugins-dependencies 2
+.flutter-plugins-dependencies 3
