@@ -25,8 +25,8 @@ class LocalNotificationPort implements NotificationPort {
   @override
   Future<void> requestPermission() async {
     await initialize();
-    final android = _plugin
-        .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+    final android = _plugin.resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>();
     await android?.requestNotificationsPermission();
     await android?.requestExactAlarmsPermission();
     debugPrint('CareBridge notifications: permission requested');
@@ -60,60 +60,72 @@ class LocalNotificationPort implements NotificationPort {
       debugPrint(
         'CareBridge: exactAllowWhileIdle schedule failed ($e). Retrying inexact. $st',
       );
-      debugPrint('CareBridge notifications: schedule inexact at $zonedFireTime');
+      debugPrint(
+          'CareBridge notifications: schedule inexact at $zonedFireTime');
       await go(AndroidScheduleMode.inexactAllowWhileIdle);
     }
   }
 
   @override
   Future<void> scheduleTaskReminder(CareTask task) async {
-    await requestPermission();
+    await initialize();
     if (task.status != TaskStatus.pending) return;
+    await cancelTaskReminder(task.id);
 
     final now = DateTime.now();
-    var reminderTime =
-        task.scheduledAt.subtract(Duration(minutes: task.remindMinutesBefore));
+    var scheduledCount = 0;
+    for (final occurrence in _occurrencesFor(task)) {
+      var reminderTime =
+          occurrence.subtract(Duration(minutes: task.remindMinutesBefore));
 
-    if (reminderTime.isBefore(now) && task.scheduledAt.isAfter(now)) {
-      reminderTime = task.scheduledAt;
-    }
-
-    final taskMomentPast = task.scheduledAt.toUtc().isBefore(now.toUtc());
-    var fireAt = reminderTime;
-
-    // Fire at-least-soon ahead so "now-ish" reminders are not discarded by rounding.
-    if (!fireAt.isAfter(now)) {
-      if (taskMomentPast) {
-        return;
+      if (reminderTime.isBefore(now) && occurrence.isAfter(now)) {
+        reminderTime = occurrence;
       }
-      fireAt = now.add(const Duration(seconds: 3));
-    }
 
-    await _zonedScheduleCompat(
-      id: _notificationId(task.id),
-      title: task.title,
-      body: task.details.isEmpty ? 'CareBridge reminder' : task.details,
-      zonedFireTime: _instantAsUtcTz(fireAt),
-      details: const NotificationDetails(
-        android: AndroidNotificationDetails(
-          'carebridge_task_reminders',
-          'Task reminders',
-          channelDescription: 'Reminder notifications for care tasks',
-          importance: Importance.high,
-          priority: Priority.high,
+      final taskMomentPast = occurrence.toUtc().isBefore(now.toUtc());
+      var fireAt = reminderTime;
+
+      // Fire at-least-soon ahead so "now-ish" reminders are not discarded by rounding.
+      if (!fireAt.isAfter(now)) {
+        if (taskMomentPast) {
+          continue;
+        }
+        fireAt = now.add(const Duration(seconds: 3));
+      }
+
+      await _zonedScheduleCompat(
+        id: _notificationId(task.id, scheduledCount),
+        title: task.title,
+        body: task.details.isEmpty ? 'CareBridge reminder' : task.details,
+        zonedFireTime: _instantAsUtcTz(fireAt),
+        details: const NotificationDetails(
+          android: AndroidNotificationDetails(
+            'carebridge_task_reminders',
+            'Task reminders',
+            channelDescription: 'Reminder notifications for care tasks',
+            importance: Importance.high,
+            priority: Priority.high,
+          ),
         ),
-      ),
-    );
+      );
+      scheduledCount++;
+      if (scheduledCount >= _maxScheduledOccurrences) {
+        break;
+      }
+    }
     final pending = await _plugin.pendingNotificationRequests();
     debugPrint(
-      'CareBridge notifications: pending=${pending.length}, latestTask=${task.id}, fireAt=$fireAt',
+      'CareBridge notifications: pending=${pending.length}, task=${task.id}, scheduled=$scheduledCount',
     );
   }
 
   @override
   Future<void> cancelTaskReminder(String taskId) async {
     await initialize();
-    await _plugin.cancel(_notificationId(taskId));
+    await _plugin.cancel(taskId.hashCode & 0x7fffffff);
+    for (var i = 0; i < _maxScheduledOccurrences; i++) {
+      await _plugin.cancel(_notificationId(taskId, i));
+    }
   }
 
   @override
@@ -145,7 +157,8 @@ class LocalNotificationPort implements NotificationPort {
       ),
     );
     final pending = await _plugin.pendingNotificationRequests();
-    debugPrint('CareBridge notifications: test scheduled, pending=${pending.length}');
+    debugPrint(
+        'CareBridge notifications: test scheduled, pending=${pending.length}');
   }
 
   Future<void> showInstantTest() async {
@@ -167,5 +180,38 @@ class LocalNotificationPort implements NotificationPort {
     debugPrint('CareBridge notifications: instant test shown');
   }
 
-  int _notificationId(String taskId) => taskId.hashCode & 0x7fffffff;
+  Iterable<DateTime> _occurrencesFor(CareTask task) sync* {
+    final startDay = DateTime(
+      task.scheduledAt.year,
+      task.scheduledAt.month,
+      task.scheduledAt.day,
+    );
+    final duration = task.normalizedRepeatDurationDays;
+    final interval = task.repeatRule.dayInterval;
+    final times = task.normalizedReminderMinutesOfDay;
+
+    for (var dayOffset = 0; dayOffset < duration; dayOffset++) {
+      if (task.repeatRule == RepeatRule.none && dayOffset > 0) {
+        break;
+      }
+      if (task.repeatRule != RepeatRule.none && dayOffset % interval != 0) {
+        continue;
+      }
+      final day = startDay.add(Duration(days: dayOffset));
+      for (final minutes in times) {
+        yield DateTime(
+          day.year,
+          day.month,
+          day.day,
+          minutes ~/ 60,
+          minutes % 60,
+        );
+      }
+    }
+  }
+
+  int _notificationId(String taskId, int occurrenceIndex) =>
+      Object.hash(taskId, occurrenceIndex) & 0x7fffffff;
+
+  static const _maxScheduledOccurrences = 120;
 }

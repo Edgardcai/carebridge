@@ -73,7 +73,8 @@ class CareStore extends ChangeNotifier {
     if (patient == null) {
       return [];
     }
-    final next = _bundle.tasks.where((task) => task.patientId == patient.id).toList();
+    final next =
+        _bundle.tasks.where((task) => task.patientId == patient.id).toList();
     next.sort((a, b) => a.scheduledAt.compareTo(b.scheduledAt));
     return next;
   }
@@ -83,20 +84,37 @@ class CareStore extends ChangeNotifier {
     return tasks.where((task) => task.isOnDate(now)).toList(growable: false);
   }
 
-  List<CareTask> get pendingTasks =>
-      tasks.where((task) => task.status == TaskStatus.pending).toList(growable: false);
+  List<CareTask> get pendingTasks => tasks
+      .where((task) => task.status == TaskStatus.pending)
+      .toList(growable: false);
 
-  List<CareTask> get completedTasks =>
-      tasks.where((task) => task.status == TaskStatus.completed).toList(growable: false);
+  List<CareTask> get completedTasks => tasks
+      .where((task) => task.status == TaskStatus.completed)
+      .toList(growable: false);
 
-  List<CareTask> get missedTasks =>
-      tasks.where((task) => task.status == TaskStatus.missed).toList(growable: false);
+  List<CareTask> get missedTasks => tasks
+      .where((task) => task.status == TaskStatus.missed)
+      .toList(growable: false);
 
-  List<CareTask> get todayPending =>
-      todayTasks.where((task) => task.status == TaskStatus.pending).toList(growable: false);
+  List<CareTask> get todayPending => todayTasks
+      .where((task) => task.status == TaskStatus.pending)
+      .toList(growable: false);
 
-  List<CareTask> get todayDone =>
-      todayTasks.where((task) => task.status == TaskStatus.completed).toList(growable: false);
+  List<CareTask> get todayDone {
+    final now = DateTime.now();
+    return tasks.where((task) {
+      if (task.status != TaskStatus.completed) {
+        return false;
+      }
+      final completedAt = task.completedAt;
+      if (completedAt != null) {
+        return _sameDay(completedAt, now);
+      }
+      return task.isOnDate(now);
+    }).toList(growable: false);
+  }
+
+  List<CareTask> get needsAttentionTasks => missedTasks;
 
   CareTask? get nextAppointment {
     final now = DateTime.now();
@@ -105,7 +123,8 @@ class CareStore extends ChangeNotifier {
           (task) =>
               task.type == TaskType.visit &&
               task.status == TaskStatus.pending &&
-              task.scheduledAt.isAfter(now.subtract(const Duration(minutes: 1))),
+              task.scheduledAt
+                  .isAfter(now.subtract(const Duration(minutes: 1))),
         )
         .toList()
       ..sort((a, b) => a.scheduledAt.compareTo(b.scheduledAt));
@@ -117,8 +136,9 @@ class CareStore extends ChangeNotifier {
     if (patient == null) {
       return [];
     }
-    final next =
-        _bundle.symptomLogs.where((log) => log.patientId == patient.id).toList();
+    final next = _bundle.symptomLogs
+        .where((log) => log.patientId == patient.id)
+        .toList();
     next.sort((a, b) => b.date.compareTo(a.date));
     return next;
   }
@@ -175,10 +195,12 @@ class CareStore extends ChangeNotifier {
     _setLoading(true);
     try {
       _bundle = await _repository.load();
-      _selectedPatientId = _bundle.patients.isEmpty ? null : _bundle.patients.first.id;
+      _selectedPatientId =
+          _bundle.patients.isEmpty ? null : _bundle.patients.first.id;
       if (_notificationPort != null) {
         await _notificationPort.requestPermission();
-        await _notificationPort.rescheduleAll(_pendingTasksForSelectedPatient());
+        await _notificationPort
+            .rescheduleAll(_pendingTasksForSelectedPatient());
       }
       _lastError = null;
     } catch (error) {
@@ -193,14 +215,33 @@ class CareStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> signInDemo({required String email}) async {
-    final safeEmail = email.trim().isEmpty ? 'demo@carebridge.local' : email.trim();
+  Future<void> signInDemo({
+    required String email,
+    String? password,
+    bool createAccount = false,
+  }) async {
+    final safeEmail =
+        email.trim().isEmpty ? 'demo@carebridge.local' : email.trim();
     final displayName = safeEmail.split('@').first;
     final user = await _repository.signInDemo(
       email: safeEmail,
       displayName: displayName,
+      password: password,
+      createAccount: createAccount,
     );
-    _bundle = _bundle.copyWith(user: user);
+    try {
+      _bundle = await _repository.load();
+      _selectedPatientId =
+          _bundle.patients.isEmpty ? null : _bundle.patients.first.id;
+      if (_notificationPort != null) {
+        await _notificationPort
+            .rescheduleAll(_pendingTasksForSelectedPatient());
+      }
+      _lastError = null;
+    } catch (error) {
+      _bundle = _bundle.copyWith(user: user);
+      _lastError = error.toString();
+    }
     notifyListeners();
   }
 
@@ -243,14 +284,10 @@ class CareStore extends ChangeNotifier {
       next[index] = saved;
     }
     _bundle = _bundle.copyWith(tasks: next);
-    if (_notificationPort != null && _notificationsEnabled) {
-      if (saved.status == TaskStatus.pending) {
-        await _notificationPort.scheduleTaskReminder(saved);
-      } else {
-        await _notificationPort.cancelTaskReminder(saved.id);
-      }
-    }
     notifyListeners();
+    if (_notificationPort != null && _notificationsEnabled) {
+      unawaited(_syncReminderForTask(saved));
+    }
   }
 
   Future<void> deleteTask(String taskId) async {
@@ -258,10 +295,10 @@ class CareStore extends ChangeNotifier {
     _bundle = _bundle.copyWith(
       tasks: _bundle.tasks.where((task) => task.id != taskId).toList(),
     );
-    if (_notificationPort != null) {
-      await _notificationPort.cancelTaskReminder(taskId);
-    }
     notifyListeners();
+    if (_notificationPort != null) {
+      unawaited(_cancelReminder(taskId));
+    }
   }
 
   Future<void> markTaskStatus(String taskId, TaskStatus status) async {
@@ -272,14 +309,34 @@ class CareStore extends ChangeNotifier {
       next[index] = saved;
     }
     _bundle = _bundle.copyWith(tasks: next);
-    if (_notificationPort != null) {
-      if (status == TaskStatus.pending && _notificationsEnabled) {
-        await _notificationPort.scheduleTaskReminder(saved);
-      } else {
-        await _notificationPort.cancelTaskReminder(taskId);
-      }
-    }
     notifyListeners();
+    if (_notificationPort != null) {
+      unawaited(_syncReminderForTask(saved));
+    }
+  }
+
+  Future<void> _syncReminderForTask(CareTask task) async {
+    final port = _notificationPort;
+    if (port == null) {
+      return;
+    }
+    try {
+      if (task.status == TaskStatus.pending && _notificationsEnabled) {
+        await port.scheduleTaskReminder(task);
+      } else {
+        await port.cancelTaskReminder(task.id);
+      }
+    } catch (error) {
+      debugPrint('CareBridge notifications: task reminder sync failed: $error');
+    }
+  }
+
+  Future<void> _cancelReminder(String taskId) async {
+    try {
+      await _notificationPort?.cancelTaskReminder(taskId);
+    } catch (error) {
+      debugPrint('CareBridge notifications: reminder cancel failed: $error');
+    }
   }
 
   Future<void> saveSymptomLog({
@@ -295,38 +352,50 @@ class CareStore extends ChangeNotifier {
       return;
     }
 
-    final existing = symptomLogs.where((log) => _sameDay(log.date, date)).firstOrNull;
     final uploadedUrls = <String>[];
     for (final localPath in localPhotoPaths) {
       if (_storagePort == null) {
         uploadedUrls.add(localPath);
         continue;
       }
-      final uploaded = await _storagePort.uploadSymptomPhoto(
+      final uploaded = await _storagePort
+          .uploadSymptomPhoto(
         patientId: patient.id,
         logDate: date,
         localPath: localPath,
-      );
+      )
+          .catchError((Object error) {
+        debugPrint('CareBridge storage: symptom upload failed: $error');
+        return localPath;
+      });
       uploadedUrls.add(uploaded);
     }
     final now = DateTime.now();
+    final logMoment = DateTime(
+      date.year,
+      date.month,
+      date.day,
+      date.hour,
+      date.minute,
+      date.second,
+      date.millisecond,
+      date.microsecond,
+    );
     final log = SymptomLog(
-      id: existing?.id ?? '',
+      id: '',
       patientId: patient.id,
-      date: DateTime(date.year, date.month, date.day),
+      date: logMoment,
       painLevel: painLevel,
       temperatureC: temperatureC,
       notes: notes,
       photoUrls: [...preservedPhotoUrls, ...uploadedUrls],
-      createdAt: existing?.createdAt ?? now,
+      createdAt: now,
       updatedAt: now,
     );
 
     final saved = await _repository.upsertSymptomLog(log);
     final next = [..._bundle.symptomLogs];
-    final index = next.indexWhere(
-      (item) => item.id == saved.id || _sameDay(item.date, saved.date),
-    );
+    final index = next.indexWhere((item) => item.id == saved.id);
     if (index == -1) {
       next.add(saved);
     } else {
@@ -338,16 +407,63 @@ class CareStore extends ChangeNotifier {
 
   Future<int> createTasksFromOcr(List<OcrCandidate> candidates) async {
     final created = await _repository.createTasksFromOcrCandidates(candidates);
-    _bundle = _bundle.copyWith(tasks: [..._bundle.tasks, ...created]);
+    final patient = selectedPatient;
+    _bundle = _bundle.copyWith(
+      tasks: _mergeTasks(_bundle.tasks, created),
+      ocrCandidates: patient == null
+          ? _bundle.ocrCandidates
+          : _bundle.ocrCandidates
+              .where((candidate) => candidate.patientId != patient.id)
+              .toList(growable: false),
+    );
+    notifyListeners();
     if (_notificationPort != null && _notificationsEnabled) {
-      for (final task in created) {
-        if (task.status == TaskStatus.pending) {
-          await _notificationPort.scheduleTaskReminder(task);
+      unawaited(_scheduleCreatedTaskReminders(created));
+    }
+    return created.length;
+  }
+
+  Future<void> _scheduleCreatedTaskReminders(List<CareTask> created) async {
+    final port = _notificationPort;
+    if (port == null) {
+      return;
+    }
+    for (final task in created) {
+      if (task.status == TaskStatus.pending) {
+        try {
+          await port.scheduleTaskReminder(task);
+        } catch (error) {
+          debugPrint(
+              'CareBridge notifications: OCR task schedule failed: $error');
         }
       }
     }
-    notifyListeners();
-    return created.length;
+  }
+
+  List<CareTask> _mergeTasks(List<CareTask> current, List<CareTask> incoming) {
+    final next = [...current];
+    final seen = current.map(_taskFingerprint).toSet();
+    for (final task in incoming) {
+      final key = _taskFingerprint(task);
+      if (seen.add(key)) {
+        next.add(task);
+      }
+    }
+    return next;
+  }
+
+  String _taskFingerprint(CareTask task) {
+    final normalizedDetails = task.details
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9]+'), ' ')
+        .trim();
+    final normalizedTitle =
+        task.title.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), ' ').trim();
+    return [
+      task.patientId,
+      task.type.name,
+      normalizedDetails.isEmpty ? normalizedTitle : normalizedDetails,
+    ].join('|');
   }
 
   Future<int> scanOcrCandidatesFromImage(String localImagePath) async {
@@ -360,12 +476,30 @@ class CareStore extends ChangeNotifier {
       patientId: patient.id,
       localImagePath: localImagePath,
     );
+    String? sourceImageUrl;
+    if (_storagePort != null) {
+      try {
+        sourceImageUrl = await _storagePort.uploadDischargeImage(
+          patientId: patient.id,
+          localPath: localImagePath,
+        );
+      } catch (error) {
+        debugPrint('CareBridge storage: discharge upload failed: $error');
+        sourceImageUrl = localImagePath;
+      }
+    }
+    final sourcedCandidates = sourceImageUrl == null
+        ? candidates
+        : candidates
+            .map((candidate) =>
+                candidate.copyWith(sourceImageUrl: sourceImageUrl))
+            .toList(growable: false);
     _bundle = _bundle.copyWith(ocrCandidates: [
       ..._bundle.ocrCandidates.where((item) => item.patientId != patient.id),
-      ...candidates,
+      ...sourcedCandidates,
     ]);
     notifyListeners();
-    return candidates.length;
+    return sourcedCandidates.length;
   }
 
   CareTask? taskById(String taskId) {
@@ -412,7 +546,9 @@ class CareStore extends ChangeNotifier {
       status: TaskStatus.pending,
       scheduledAt: DateTime(now.year, now.month, now.day, now.hour + 1),
       assigneeId: familyMembers.isEmpty ? null : familyMembers.first.id,
-      assigneeName: familyMembers.isEmpty ? 'Unassigned' : familyMembers.first.displayName,
+      assigneeName: familyMembers.isEmpty
+          ? 'Unassigned'
+          : familyMembers.first.displayName,
       createdAt: now,
       updatedAt: now,
     );
@@ -427,7 +563,8 @@ class CareStore extends ChangeNotifier {
     _notificationsEnabled = value;
     if (_notificationPort != null) {
       if (value) {
-        unawaited(_notificationPort.rescheduleAll(_pendingTasksForSelectedPatient()));
+        unawaited(
+            _notificationPort.rescheduleAll(_pendingTasksForSelectedPatient()));
       } else {
         for (final task in _pendingTasksForSelectedPatient()) {
           unawaited(_notificationPort.cancelTaskReminder(task.id));
@@ -441,7 +578,8 @@ class CareStore extends ChangeNotifier {
     if (lastSevenLogs.isEmpty) {
       return 0;
     }
-    final sum = lastSevenLogs.fold<int>(0, (total, log) => total + log.painLevel);
+    final sum =
+        lastSevenLogs.fold<int>(0, (total, log) => total + log.painLevel);
     return sum / lastSevenLogs.length;
   }
 
@@ -467,7 +605,8 @@ class CareStore extends ChangeNotifier {
     final patient = selectedPatient;
     if (patient == null) return const [];
     return _bundle.tasks
-        .where((task) => task.patientId == patient.id && task.status == TaskStatus.pending)
+        .where((task) =>
+            task.patientId == patient.id && task.status == TaskStatus.pending)
         .toList(growable: false);
   }
 
@@ -478,15 +617,5 @@ class CareStore extends ChangeNotifier {
       unawaited((ocrPort as DisposableIntegration).disposeIntegration());
     }
     super.dispose();
-  }
-}
-
-extension FirstOrNull<T> on Iterable<T> {
-  T? get firstOrNull {
-    final iterator = this.iterator;
-    if (iterator.moveNext()) {
-      return iterator.current;
-    }
-    return null;
   }
 }

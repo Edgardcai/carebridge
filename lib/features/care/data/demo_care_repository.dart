@@ -17,6 +17,8 @@ class DemoCareRepository implements CareRepository {
   Future<AppUser> signInDemo({
     required String email,
     required String displayName,
+    String? password,
+    bool createAccount = false,
   }) async {
     final user = AppUser(
       uid: 'demo_user_1',
@@ -117,11 +119,7 @@ class DemoCareRepository implements CareRepository {
         : log.copyWith(updatedAt: now);
 
     final next = [..._bundle.symptomLogs];
-    final index = next.indexWhere(
-      (item) =>
-          item.id == normalized.id ||
-          (item.patientId == normalized.patientId && _sameDay(item.date, normalized.date)),
-    );
+    final index = next.indexWhere((item) => item.id == normalized.id);
     if (index == -1) {
       next.add(normalized);
     } else {
@@ -136,8 +134,10 @@ class DemoCareRepository implements CareRepository {
     List<OcrCandidate> candidates,
   ) async {
     final now = DateTime.now();
-    final selected = candidates.where((item) => item.selected).toList();
+    final selected =
+        _uniqueCandidates(candidates.where((item) => item.selected));
     final created = <CareTask>[];
+    final existingKeys = _bundle.tasks.map(_taskFingerprint).toSet();
     final byPatient = <String, FamilyMember?>{};
 
     for (final candidate in selected) {
@@ -145,6 +145,10 @@ class DemoCareRepository implements CareRepository {
         candidate.patientId,
         () => _defaultAssigneeFor(candidate.patientId),
       );
+      final repeatRule = _repeatFromCandidate(candidate);
+      final durationDays = _durationFromCandidate(candidate, repeatRule);
+      final scheduledAt =
+          candidate.scheduledAt ?? DateTime(now.year, now.month, now.day, 9);
       final task = CareTask(
         id: _id('task'),
         patientId: candidate.patientId,
@@ -152,22 +156,40 @@ class DemoCareRepository implements CareRepository {
         details: candidate.extractedText,
         type: _typeFromCandidate(candidate.type),
         status: TaskStatus.pending,
-        scheduledAt: candidate.scheduledAt ?? DateTime(now.year, now.month, now.day, 9),
-        repeatRule: candidate.type == OcrCandidateType.medication
-            ? RepeatRule.daily
-            : RepeatRule.none,
-        remindMinutesBefore: candidate.type == OcrCandidateType.appointment ? 1440 : 0,
+        scheduledAt: scheduledAt,
+        repeatRule: repeatRule,
+        repeatDurationDays: durationDays,
+        reminderMinutesOfDay:
+            _timesFromCandidate(candidate, repeatRule, scheduledAt),
+        remindMinutesBefore:
+            candidate.type == OcrCandidateType.appointment ? 1440 : 0,
         assigneeId: defaultAssignee?.id,
         assigneeName: defaultAssignee?.displayName ?? 'Unassigned',
         sourceLabel: 'Discharge_Instructions_DrSmith.jpg',
+        sourceImageUrl: candidate.sourceImageUrl,
         createdAt: now,
         updatedAt: now,
       );
-      created.add(task);
+      if (existingKeys.add(_taskFingerprint(task))) {
+        created.add(task);
+      }
     }
 
     _bundle = _bundle.copyWith(tasks: [..._bundle.tasks, ...created]);
     return created;
+  }
+
+  List<OcrCandidate> _uniqueCandidates(Iterable<OcrCandidate> candidates) {
+    final seen = <String>{};
+    final unique = <OcrCandidate>[];
+    for (final candidate in candidates) {
+      final key =
+          '${candidate.patientId}|${candidate.type.name}|${_normalizeText(candidate.extractedText)}';
+      if (seen.add(key)) {
+        unique.add(candidate);
+      }
+    }
+    return unique;
   }
 
   static CareBundle _seedBundle() {
@@ -230,6 +252,7 @@ class DemoCareRepository implements CareRepository {
         status: TaskStatus.pending,
         scheduledAt: at(0, 8),
         repeatRule: RepeatRule.daily,
+        repeatDurationDays: 14,
         assigneeId: 'member_you',
         assigneeName: 'You',
         sourceLabel: 'Discharge_Summary_0412.pdf',
@@ -245,6 +268,7 @@ class DemoCareRepository implements CareRepository {
         status: TaskStatus.pending,
         scheduledAt: at(0, 10, 30),
         repeatRule: RepeatRule.daily,
+        repeatDurationDays: 21,
         assigneeId: 'member_mark',
         assigneeName: 'Mark',
         createdAt: now.subtract(const Duration(days: 8)),
@@ -258,6 +282,7 @@ class DemoCareRepository implements CareRepository {
         type: TaskType.visit,
         status: TaskStatus.pending,
         scheduledAt: at(0, 14),
+        repeatDurationDays: 1,
         assigneeId: 'member_you',
         assigneeName: 'You',
         createdAt: now.subtract(const Duration(days: 5)),
@@ -267,10 +292,13 @@ class DemoCareRepository implements CareRepository {
         id: 'task_done_water',
         patientId: patient.id,
         title: 'Hydration check',
-        details: 'Drink water with breakfast and update family if appetite is low.',
+        details:
+            'Drink water with breakfast and update family if appetite is low.',
         type: TaskType.note,
         status: TaskStatus.completed,
         scheduledAt: at(0, 7, 30),
+        repeatRule: RepeatRule.daily,
+        repeatDurationDays: 14,
         assigneeId: 'member_sarah',
         assigneeName: 'Sarah',
         completedAt: at(0, 7, 42),
@@ -285,6 +313,8 @@ class DemoCareRepository implements CareRepository {
         type: TaskType.note,
         status: TaskStatus.missed,
         scheduledAt: at(-1, 8, 30),
+        repeatRule: RepeatRule.daily,
+        repeatDurationDays: 14,
         assigneeId: 'member_you',
         assigneeName: 'You',
         createdAt: now.subtract(const Duration(days: 6)),
@@ -298,6 +328,7 @@ class DemoCareRepository implements CareRepository {
         type: TaskType.visit,
         status: TaskStatus.pending,
         scheduledAt: at(1, 14),
+        repeatDurationDays: 1,
         remindMinutesBefore: 1440,
         assigneeId: 'member_sarah',
         assigneeName: 'Sarah',
@@ -345,7 +376,8 @@ class DemoCareRepository implements CareRepository {
         id: 'ocr_3',
         patientId: patient.id,
         type: OcrCandidateType.instruction,
-        extractedText: 'Walk 15 minutes daily. Stop and call clinic if severe pain.',
+        extractedText:
+            'Walk 15 minutes daily. Stop and call clinic if severe pain.',
         confidence: 0.72,
         scheduledAt: at(0, 10, 30),
       ),
@@ -361,14 +393,12 @@ class DemoCareRepository implements CareRepository {
     );
   }
 
-  static String _id(String prefix) => '${prefix}_${DateTime.now().microsecondsSinceEpoch}';
-
-  static bool _sameDay(DateTime a, DateTime b) {
-    return a.year == b.year && a.month == b.month && a.day == b.day;
-  }
+  static String _id(String prefix) =>
+      '${prefix}_${DateTime.now().microsecondsSinceEpoch}';
 
   String _titleFromCandidate(OcrCandidate candidate) {
-    final parsed = _extractTitleFromText(candidate.extractedText, candidate.type);
+    final parsed =
+        _extractTitleFromText(candidate.extractedText, candidate.type);
     if (parsed != null && parsed.isNotEmpty) {
       return parsed;
     }
@@ -385,7 +415,8 @@ class DemoCareRepository implements CareRepository {
   }
 
   FamilyMember? _defaultAssigneeFor(String patientId) {
-    final members = _bundle.familyMembers.where((m) => m.patientId == patientId).toList();
+    final members =
+        _bundle.familyMembers.where((m) => m.patientId == patientId).toList();
     for (final member in members) {
       if (member.role == FamilyRole.primaryCarer) return member;
     }
@@ -407,18 +438,26 @@ class DemoCareRepository implements CareRepository {
           caseSensitive: false,
         ).firstMatch(text);
         if (med != null) return med.group(1);
-        final take = RegExp(r'(?:take|medicine|drug)\s+([A-Za-z][A-Za-z0-9\- ]{2,30})', caseSensitive: false)
+        final take = RegExp(
+                r'(?:take|medicine|drug)\s+([A-Za-z][A-Za-z0-9\- ]{2,30})',
+                caseSensitive: false)
             .firstMatch(text);
         if (take != null) return take.group(1)?.trim();
         break;
       case OcrCandidateType.appointment:
-        final clinic = RegExp(r'(?:appointment|follow[- ]?up)\s+(?:with\s+)?([A-Za-z][A-Za-z .-]{2,40})', caseSensitive: false)
+        final clinic = RegExp(
+                r'(?:appointment|follow[- ]?up)\s+(?:with\s+)?([A-Za-z][A-Za-z .-]{2,40})',
+                caseSensitive: false)
             .firstMatch(text);
         if (clinic != null) return 'Appointment: ${clinic.group(1)!.trim()}';
         break;
       case OcrCandidateType.instruction:
-        final verb = RegExp(r'^(walk|exercise|stretch|physio)\b', caseSensitive: false).firstMatch(text);
-        if (verb != null) return '${verb.group(1)![0].toUpperCase()}${verb.group(1)!.substring(1)} plan';
+        final verb =
+            RegExp(r'^(walk|exercise|stretch|physio)\b', caseSensitive: false)
+                .firstMatch(text);
+        if (verb != null) {
+          return '${verb.group(1)![0].toUpperCase()}${verb.group(1)!.substring(1)} plan';
+        }
         break;
       case OcrCandidateType.other:
         break;
@@ -428,6 +467,93 @@ class DemoCareRepository implements CareRepository {
     if (sentence.length <= 48) return sentence;
     return '${sentence.substring(0, 45)}...';
   }
+
+  RepeatRule _repeatFromCandidate(OcrCandidate candidate) {
+    final lower = candidate.extractedText.toLowerCase();
+    if (candidate.type == OcrCandidateType.appointment) {
+      return RepeatRule.none;
+    }
+    if (_hasAny(lower, const ['three times daily', '3 times daily', 'tid'])) {
+      return RepeatRule.threeTimesDaily;
+    }
+    if (_hasAny(lower,
+        const ['twice daily', 'two times daily', '2 times daily', 'bid'])) {
+      return RepeatRule.twiceDaily;
+    }
+    if (_hasAny(lower, const ['every 3 days', 'every three days'])) {
+      return RepeatRule.everyThreeDays;
+    }
+    if (_hasAny(
+        lower, const ['every 2 days', 'every two days', 'every other day'])) {
+      return RepeatRule.everyTwoDays;
+    }
+    if (_hasAny(lower, const ['weekly', 'every week', 'next week'])) {
+      return RepeatRule.weekly;
+    }
+    if (_hasAny(lower,
+        const ['daily', 'every morning', 'every evening', 'every night'])) {
+      return RepeatRule.daily;
+    }
+    return candidate.type == OcrCandidateType.medication
+        ? RepeatRule.daily
+        : RepeatRule.none;
+  }
+
+  int _durationFromCandidate(OcrCandidate candidate, RepeatRule repeatRule) {
+    if (!repeatRule.isRepeating) {
+      return 1;
+    }
+    final match = RegExp(r'\bfor\s+(\d{1,2})\s+days?\b', caseSensitive: false)
+        .firstMatch(candidate.extractedText);
+    if (match != null) {
+      return int.parse(match.group(1)!).clamp(1, 30).toInt();
+    }
+    if (repeatRule == RepeatRule.weekly) {
+      return 30;
+    }
+    return candidate.type == OcrCandidateType.medication ? 7 : 14;
+  }
+
+  List<int> _timesFromCandidate(
+    OcrCandidate candidate,
+    RepeatRule repeatRule,
+    DateTime scheduledAt,
+  ) {
+    if (!repeatRule.isMultiDaily) {
+      return const [];
+    }
+    final first = scheduledAt.hour * 60 + scheduledAt.minute;
+    switch (repeatRule) {
+      case RepeatRule.twiceDaily:
+        return [first, _addHours(first, 9)];
+      case RepeatRule.threeTimesDaily:
+        return [first, _addHours(first, 5), _addHours(first, 10)];
+      case RepeatRule.none:
+      case RepeatRule.daily:
+      case RepeatRule.everyTwoDays:
+      case RepeatRule.everyThreeDays:
+      case RepeatRule.weekly:
+        return const [];
+    }
+  }
+
+  int _addHours(int minutes, int hours) => (minutes + hours * 60) % (24 * 60);
+
+  String _taskFingerprint(CareTask task) {
+    final normalizedDetails = _normalizeText(task.details);
+    final normalizedTitle = _normalizeText(task.title);
+    return [
+      task.patientId,
+      task.type.name,
+      normalizedDetails.isEmpty ? normalizedTitle : normalizedDetails,
+    ].join('|');
+  }
+
+  String _normalizeText(String text) =>
+      text.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]+'), ' ').trim();
+
+  bool _hasAny(String text, List<String> keywords) =>
+      keywords.any((keyword) => text.contains(keyword));
 
   static TaskType _typeFromCandidate(OcrCandidateType type) {
     switch (type) {

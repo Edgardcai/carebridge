@@ -66,7 +66,9 @@ patients/{patientId}/tasks/{taskId}
   type: "medication" | "visit" | "rehab" | "note"
   status: "pending" | "completed" | "missed"
   scheduledAt: timestamp
-  repeatRule: "none" | "daily" | "weekly"
+  repeatRule: "none" | "daily" | "everyTwoDays" | "everyThreeDays" | "weekly" | "twiceDaily" | "threeTimesDaily"
+  repeatDurationDays: number
+  reminderMinutesOfDay: array<number>
   remindMinutesBefore: number
   assigneeId: string|null
   assigneeName: string
@@ -76,7 +78,7 @@ patients/{patientId}/tasks/{taskId}
   createdAt: timestamp
   updatedAt: timestamp
 
-patients/{patientId}/symptomLogs/{yyyyMMdd}
+patients/{patientId}/symptomLogs/{yyyyMMdd_HHmmss_microseconds}
   date: timestamp
   painLevel: number
   temperatureC: number
@@ -157,8 +159,12 @@ Implement all methods in `CareRepository`:
 
 ## Mapping notes
 
-- Use deterministic symptom log ids like `yyyyMMdd` to make daily upsert easy.
+- Use deterministic symptom log ids like `yyyyMMdd_HHmmss_microseconds` so the
+  log chart can show multiple records from the same day.
 - Store enum values by `name`, for example `TaskStatus.pending.name`.
+- Store Role C repeat metadata (`repeatDurationDays`,
+  `reminderMinutesOfDay`) with each task so multi-reminder schedules survive
+  app restart.
 - Convert Firestore timestamps to local `DateTime`.
 - Keep patient profile and task CRUD working offline if Firestore persistence is
   enabled.
@@ -171,7 +177,8 @@ Implement all methods in `CareRepository`:
 - New patient writes Firestore document and appears after app restart.
 - Task create/edit/delete syncs to Firestore.
 - Mark completed updates `status` and `completedAt`.
-- Symptom log writes to `patients/{patientId}/symptomLogs/{yyyyMMdd}`.
+- Symptom log writes to
+  `patients/{patientId}/symptomLogs/{yyyyMMdd_HHmmss_microseconds}`.
 - A second signed-in family user can read shared patient data but cannot edit
   when `readOnly == true`.
 - Storage upload returns a path/URL that can be shown from OCR review and log

@@ -2,7 +2,15 @@ enum TaskType { medication, visit, rehab, note }
 
 enum TaskStatus { pending, completed, missed }
 
-enum RepeatRule { none, daily, weekly }
+enum RepeatRule {
+  none,
+  daily,
+  everyTwoDays,
+  everyThreeDays,
+  weekly,
+  twiceDaily,
+  threeTimesDaily,
+}
 
 enum FamilyRole { patient, primaryCarer, familyViewer }
 
@@ -43,8 +51,52 @@ extension RepeatRuleLabel on RepeatRule {
         return 'None';
       case RepeatRule.daily:
         return 'Daily';
+      case RepeatRule.everyTwoDays:
+        return 'Every 2 days';
+      case RepeatRule.everyThreeDays:
+        return 'Every 3 days';
       case RepeatRule.weekly:
         return 'Weekly';
+      case RepeatRule.twiceDaily:
+        return 'Twice daily';
+      case RepeatRule.threeTimesDaily:
+        return 'Three times daily';
+    }
+  }
+
+  bool get isRepeating => this != RepeatRule.none;
+
+  bool get isMultiDaily =>
+      this == RepeatRule.twiceDaily || this == RepeatRule.threeTimesDaily;
+
+  int get dayInterval {
+    switch (this) {
+      case RepeatRule.none:
+      case RepeatRule.daily:
+      case RepeatRule.twiceDaily:
+      case RepeatRule.threeTimesDaily:
+        return 1;
+      case RepeatRule.everyTwoDays:
+        return 2;
+      case RepeatRule.everyThreeDays:
+        return 3;
+      case RepeatRule.weekly:
+        return 7;
+    }
+  }
+
+  int get timesPerActiveDay {
+    switch (this) {
+      case RepeatRule.twiceDaily:
+        return 2;
+      case RepeatRule.threeTimesDaily:
+        return 3;
+      case RepeatRule.none:
+      case RepeatRule.daily:
+      case RepeatRule.everyTwoDays:
+      case RepeatRule.everyThreeDays:
+      case RepeatRule.weekly:
+        return 1;
     }
   }
 }
@@ -131,7 +183,8 @@ class PatientProfile {
   String get firstName => fullName.trim().split(RegExp(r'\s+')).first;
 
   int daySinceDischarge(DateTime now) {
-    final start = DateTime(dischargeDate.year, dischargeDate.month, dischargeDate.day);
+    final start =
+        DateTime(dischargeDate.year, dischargeDate.month, dischargeDate.day);
     final today = DateTime(now.year, now.month, now.day);
     return today.difference(start).inDays + 1;
   }
@@ -197,6 +250,8 @@ class CareTask {
     required this.updatedAt,
     this.details = '',
     this.repeatRule = RepeatRule.none,
+    this.repeatDurationDays = 1,
+    this.reminderMinutesOfDay = const [],
     this.remindMinutesBefore = 0,
     this.assigneeId,
     this.assigneeName = 'Unassigned',
@@ -213,6 +268,8 @@ class CareTask {
   final TaskStatus status;
   final DateTime scheduledAt;
   final RepeatRule repeatRule;
+  final int repeatDurationDays;
+  final List<int> reminderMinutesOfDay;
   final int remindMinutesBefore;
   final String? assigneeId;
   final String assigneeName;
@@ -228,6 +285,36 @@ class CareTask {
         scheduledAt.day == date.day;
   }
 
+  int get normalizedRepeatDurationDays {
+    if (!repeatRule.isRepeating) {
+      return 1;
+    }
+    return repeatDurationDays < 1 ? 1 : repeatDurationDays;
+  }
+
+  List<int> get normalizedReminderMinutesOfDay {
+    final base = scheduledAt.hour * 60 + scheduledAt.minute;
+    final requiredCount = repeatRule.timesPerActiveDay;
+    final values = <int>[
+      base,
+      ...reminderMinutesOfDay,
+    ].where((minute) => minute >= 0 && minute < 24 * 60).toSet().toList()
+      ..sort();
+
+    if (values.length >= requiredCount) {
+      return values.take(requiredCount).toList(growable: false);
+    }
+
+    final fallback = <int>{...values};
+    while (fallback.length < requiredCount) {
+      final next =
+          (base + fallback.length * (12 * 60 ~/ requiredCount)) % (24 * 60);
+      fallback.add(next);
+    }
+    final normalized = fallback.toList()..sort();
+    return normalized.take(requiredCount).toList(growable: false);
+  }
+
   CareTask copyWith({
     String? id,
     String? patientId,
@@ -237,6 +324,8 @@ class CareTask {
     TaskStatus? status,
     DateTime? scheduledAt,
     RepeatRule? repeatRule,
+    int? repeatDurationDays,
+    List<int>? reminderMinutesOfDay,
     int? remindMinutesBefore,
     String? assigneeId,
     String? assigneeName,
@@ -256,6 +345,8 @@ class CareTask {
       status: status ?? this.status,
       scheduledAt: scheduledAt ?? this.scheduledAt,
       repeatRule: repeatRule ?? this.repeatRule,
+      repeatDurationDays: repeatDurationDays ?? this.repeatDurationDays,
+      reminderMinutesOfDay: reminderMinutesOfDay ?? this.reminderMinutesOfDay,
       remindMinutesBefore: remindMinutesBefore ?? this.remindMinutesBefore,
       assigneeId: assigneeId ?? this.assigneeId,
       assigneeName: assigneeName ?? this.assigneeName,
@@ -324,6 +415,7 @@ class OcrCandidate {
     required this.extractedText,
     required this.confidence,
     this.scheduledAt,
+    this.sourceImageUrl,
     this.selected = true,
   });
 
@@ -333,6 +425,7 @@ class OcrCandidate {
   final String extractedText;
   final double confidence;
   final DateTime? scheduledAt;
+  final String? sourceImageUrl;
   final bool selected;
 
   OcrCandidate copyWith({
@@ -342,6 +435,7 @@ class OcrCandidate {
     String? extractedText,
     double? confidence,
     DateTime? scheduledAt,
+    String? sourceImageUrl,
     bool? selected,
   }) {
     return OcrCandidate(
@@ -351,6 +445,7 @@ class OcrCandidate {
       extractedText: extractedText ?? this.extractedText,
       confidence: confidence ?? this.confidence,
       scheduledAt: scheduledAt ?? this.scheduledAt,
+      sourceImageUrl: sourceImageUrl ?? this.sourceImageUrl,
       selected: selected ?? this.selected,
     );
   }

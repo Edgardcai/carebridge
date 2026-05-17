@@ -6,6 +6,8 @@ abstract class CareRepository {
   Future<AppUser> signInDemo({
     required String email,
     required String displayName,
+    String? password,
+    bool createAccount = false,
   });
 
   Future<void> signOut();

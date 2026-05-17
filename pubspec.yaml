@@ -17,11 +17,10 @@ dependencies:
   google_mlkit_text_recognition: ^0.15.0
   flutter_local_notifications: ^17.2.3
   timezone: ^0.9.4
-
-  # Role B/C should add current plugin versions when wiring implementations:
-  # firebase_core, firebase_auth, cloud_firestore, firebase_storage
-  # google_mlkit_text_recognition, flutter_local_notifications, fl_chart
-  # image_picker, uuid
+  firebase_core: ^4.9.0
+  firebase_auth: ^6.5.1
+  cloud_firestore: ^6.4.1
+  firebase_storage: ^13.4.1
 
 dev_dependencies:
   flutter_test:

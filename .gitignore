@@ -2,6 +2,7 @@
 .packages
 .pub-cache/
 .pub/
+.flutter-plugins-dependencies
 build/
 coverage/
 .DS_Store
@@ -16,6 +17,7 @@ android/app/release
 .idea/
 .vscode/
 firebase_options.dart
+!lib/firebase_options.dart
 google-services.json
 GoogleService-Info.plist
 
