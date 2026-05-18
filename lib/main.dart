@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -18,7 +20,7 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   final notificationPort = LocalNotificationPort();
-  await notificationPort.initialize();
+  await _initializeNotifications(notificationPort);
   final backend = await _initializeBackend();
 
   final store = CareStore(
@@ -36,12 +38,21 @@ Future<void> main() async {
   );
 }
 
+Future<void> _initializeNotifications(LocalNotificationPort port) async {
+  try {
+    await port.initialize().timeout(const Duration(seconds: 3));
+  } catch (error, stackTrace) {
+    debugPrint('CareBridge notifications: init failed: $error');
+    debugPrintStack(stackTrace: stackTrace);
+  }
+}
+
 Future<_CareBackend> _initializeBackend() async {
   try {
     if (Firebase.apps.isEmpty) {
       await Firebase.initializeApp(
-        options: DefaultFirebaseOptions.currentPlatform,
-      );
+              options: DefaultFirebaseOptions.currentPlatform)
+          .timeout(const Duration(seconds: 8));
     }
     debugPrint('CareBridge backend: Firebase enabled.');
     return _CareBackend(

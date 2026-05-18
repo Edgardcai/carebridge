@@ -21,6 +21,7 @@ class CareStore extends ChangeNotifier {
   final OcrPort? _ocrPort;
   final NotificationPort? _notificationPort;
   final StoragePort? _storagePort;
+  static const _repositoryLoadTimeout = Duration(seconds: 12);
 
   CareBundle _bundle = const CareBundle(
     user: null,
@@ -194,13 +195,11 @@ class CareStore extends ChangeNotifier {
   Future<void> load() async {
     _setLoading(true);
     try {
-      _bundle = await _repository.load();
+      _bundle = await _repository.load().timeout(_repositoryLoadTimeout);
       _selectedPatientId =
           _bundle.patients.isEmpty ? null : _bundle.patients.first.id;
       if (_notificationPort != null) {
-        await _notificationPort.requestPermission();
-        await _notificationPort
-            .rescheduleAll(_pendingTasksForSelectedPatient());
+        unawaited(_prepareNotificationsAfterLoad());
       }
       _lastError = null;
     } catch (error) {
@@ -230,12 +229,11 @@ class CareStore extends ChangeNotifier {
       createAccount: createAccount,
     );
     try {
-      _bundle = await _repository.load();
+      _bundle = await _repository.load().timeout(_repositoryLoadTimeout);
       _selectedPatientId =
           _bundle.patients.isEmpty ? null : _bundle.patients.first.id;
       if (_notificationPort != null) {
-        await _notificationPort
-            .rescheduleAll(_pendingTasksForSelectedPatient());
+        unawaited(_prepareNotificationsAfterLoad(requestPermission: false));
       }
       _lastError = null;
     } catch (error) {
@@ -328,6 +326,25 @@ class CareStore extends ChangeNotifier {
       }
     } catch (error) {
       debugPrint('CareBridge notifications: task reminder sync failed: $error');
+    }
+  }
+
+  Future<void> _prepareNotificationsAfterLoad({
+    bool requestPermission = true,
+  }) async {
+    final port = _notificationPort;
+    if (port == null) {
+      return;
+    }
+    try {
+      if (requestPermission) {
+        await port.requestPermission().timeout(const Duration(seconds: 6));
+      }
+      await port
+          .rescheduleAll(_pendingTasksForSelectedPatient())
+          .timeout(const Duration(seconds: 8));
+    } catch (error) {
+      debugPrint('CareBridge notifications: startup sync failed: $error');
     }
   }
 
