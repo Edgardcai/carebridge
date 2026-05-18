@@ -7,6 +7,7 @@ const email = process.env.DEMO_EMAIL || 'demo.carebridge7506@example.com';
 const password = process.env.DEMO_PASSWORD || 'CareBridge123!';
 
 const authBase = 'https://identitytoolkit.googleapis.com/v1';
+let patientId = 'demo_patient_elena';
 
 async function postJson(url, body, token) {
   const response = await fetch(url, {
@@ -117,8 +118,8 @@ function logId(date) {
 
 function task(id, title, details, type, status, scheduledAt, extra = {}) {
   const now = new Date();
-  return writeDocument(`patients/demo_patient_elena/tasks/${id}`, {
-    patientId: 'demo_patient_elena',
+  return writeDocument(`patients/${patientId}/tasks/${id}`, {
+    patientId,
     title,
     details,
     type,
@@ -140,8 +141,8 @@ function task(id, title, details, type, status, scheduledAt, extra = {}) {
 }
 
 function symptomLog(date, painLevel, temperatureC, notes) {
-  return writeDocument(`patients/demo_patient_elena/symptomLogs/${logId(date)}`, {
-    patientId: 'demo_patient_elena',
+  return writeDocument(`patients/${patientId}/symptomLogs/${logId(date)}`, {
+    patientId,
     date,
     painLevel,
     temperatureC,
@@ -153,16 +154,17 @@ function symptomLog(date, painLevel, temperatureC, notes) {
 }
 
 function buildWrites(uid) {
+  patientId = `demo_patient_${uid.replace(/[^A-Za-z0-9_]/g, '_').slice(0, 12)}`;
   const now = new Date();
   const writes = [
     writeDocument(`users/${uid}`, {
       email,
       displayName: 'Demo Carer',
-      selectedPatientId: 'demo_patient_elena',
+      selectedPatientId: patientId,
       createdAt: now,
       updatedAt: now,
     }),
-    writeDocument('patients/demo_patient_elena', {
+    writeDocument(`patients/${patientId}`, {
       ownerUid: uid,
       fullName: 'Eleanor Smith',
       age: 65,
@@ -180,7 +182,7 @@ function buildWrites(uid) {
       createdAt: now,
       updatedAt: now,
     }),
-    writeDocument('patients/demo_patient_elena/familyMembers/member_you', {
+    writeDocument(`patients/${patientId}/familyMembers/member_you`, {
       userUid: uid,
       displayName: 'You',
       relationship: 'Primary carer',
@@ -188,7 +190,7 @@ function buildWrites(uid) {
       readOnly: false,
       createdAt: now,
     }),
-    writeDocument('patients/demo_patient_elena/familyMembers/member_sarah', {
+    writeDocument(`patients/${patientId}/familyMembers/member_sarah`, {
       userUid: null,
       displayName: 'Sarah',
       relationship: 'Daughter',
@@ -197,7 +199,7 @@ function buildWrites(uid) {
       invitedEmail: 'sarah.demo@example.com',
       createdAt: now,
     }),
-    writeDocument('patients/demo_patient_elena/familyMembers/member_mark', {
+    writeDocument(`patients/${patientId}/familyMembers/member_mark`, {
       userUid: null,
       displayName: 'Mark',
       relationship: 'Husband',
@@ -343,15 +345,26 @@ function buildWrites(uid) {
   return writes;
 }
 
+async function batchWrite(label, writes, token) {
+  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:batchWrite`;
+  let result;
+  try {
+    result = await postJson(url, {writes}, token);
+  } catch (error) {
+    error.message = `${label}: ${error.message}`;
+    throw error;
+  }
+  const failed = (result.status || []).filter((status) => status.code);
+  if (failed.length) {
+    throw new Error(`${label}: Firestore writes failed: ${JSON.stringify(failed)}`);
+  }
+}
+
 async function main() {
   const auth = await authenticate();
   const writes = buildWrites(auth.localId);
-  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:batchWrite`;
-  const result = await postJson(url, {writes}, auth.idToken);
-  const failed = (result.status || []).filter((status) => status.code);
-  if (failed.length) {
-    throw new Error(`Firestore writes failed: ${JSON.stringify(failed)}`);
-  }
+  await batchWrite('user and patient', writes.slice(0, 2), auth.idToken);
+  await batchWrite('patient child data', writes.slice(2), auth.idToken);
 
   console.log('Demo account is ready:');
   console.log(`  Email:    ${email}`);
