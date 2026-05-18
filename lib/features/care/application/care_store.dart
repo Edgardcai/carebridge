@@ -22,6 +22,7 @@ class CareStore extends ChangeNotifier {
   final NotificationPort? _notificationPort;
   final StoragePort? _storagePort;
   static const _repositoryLoadTimeout = Duration(seconds: 12);
+  static const _authTimeout = Duration(seconds: 20);
 
   CareBundle _bundle = const CareBundle(
     user: null,
@@ -222,12 +223,14 @@ class CareStore extends ChangeNotifier {
     final safeEmail =
         email.trim().isEmpty ? 'demo@carebridge.local' : email.trim();
     final displayName = safeEmail.split('@').first;
-    final user = await _repository.signInDemo(
-      email: safeEmail,
-      displayName: displayName,
-      password: password,
-      createAccount: createAccount,
-    );
+    final user = await _repository
+        .signInDemo(
+          email: safeEmail,
+          displayName: displayName,
+          password: password,
+          createAccount: createAccount,
+        )
+        .timeout(_authTimeout);
     try {
       _bundle = await _repository.load().timeout(_repositoryLoadTimeout);
       _selectedPatientId =

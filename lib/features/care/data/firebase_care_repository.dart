@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart' as firebase_auth;
+import 'package:flutter/foundation.dart';
 
 import '../domain/models.dart';
 import 'care_repository.dart';
@@ -108,7 +109,17 @@ class FirebaseCareRepository implements CareRepository {
     if (safeName.isNotEmpty && firebaseUser.displayName != safeName) {
       await firebaseUser.updateDisplayName(safeName);
     }
-    return _ensureUserDoc(firebaseUser, displayName: safeName);
+    try {
+      return await _ensureUserDoc(firebaseUser, displayName: safeName);
+    } catch (error) {
+      debugPrint('CareBridge Firebase: user doc write failed: $error');
+      return AppUser(
+        uid: firebaseUser.uid,
+        email: firebaseUser.email ?? safeEmail,
+        displayName: safeName,
+        isDemo: false,
+      );
+    }
   }
 
   @override

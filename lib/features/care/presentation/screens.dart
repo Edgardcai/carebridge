@@ -277,6 +277,7 @@ class _AuthScreenState extends State<AuthScreen> {
   bool _isLogin = true;
   bool _obscure = true;
   bool _obscureConfirm = true;
+  bool _isSubmitting = false;
 
   @override
   void dispose() {
@@ -287,6 +288,9 @@ class _AuthScreenState extends State<AuthScreen> {
   }
 
   Future<void> _submit() async {
+    if (_isSubmitting) {
+      return;
+    }
     final email = _email.text.trim();
     final password = _password.text;
     if (email.isEmpty) {
@@ -301,18 +305,55 @@ class _AuthScreenState extends State<AuthScreen> {
       _showSnack(context, 'Passwords do not match');
       return;
     }
-    await context.read<CareStore>().signInDemo(
-          email: _email.text,
-          password: password,
-          createAccount: !_isLogin,
-        );
-    if (!mounted) {
-      return;
+    setState(() => _isSubmitting = true);
+    try {
+      await context.read<CareStore>().signInDemo(
+            email: _email.text,
+            password: password,
+            createAccount: !_isLogin,
+          );
+      if (!mounted) {
+        return;
+      }
+      final store = context.read<CareStore>();
+      Navigator.of(context).pushReplacementNamed(
+        store.patients.isEmpty ? AppRoutes.patientNew : AppRoutes.home,
+      );
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      _showSnack(context, _authErrorMessage(error));
+    } finally {
+      if (mounted) {
+        setState(() => _isSubmitting = false);
+      }
     }
-    final store = context.read<CareStore>();
-    Navigator.of(context).pushReplacementNamed(
-      store.patients.isEmpty ? AppRoutes.patientNew : AppRoutes.home,
-    );
+  }
+
+  String _authErrorMessage(Object error) {
+    final message = error.toString();
+    if (message.contains('operation-not-allowed')) {
+      return 'Email/password login is not enabled in Firebase Authentication.';
+    }
+    if (message.contains('network-request-failed') ||
+        message.contains('TimeoutException')) {
+      return 'Network timeout. Check phone internet access and try again.';
+    }
+    if (message.contains('wrong-password') ||
+        message.contains('invalid-credential')) {
+      return 'Email or password is incorrect. Try Sign up for a new account.';
+    }
+    if (message.contains('email-already-in-use')) {
+      return 'This email already exists. Switch to Log in.';
+    }
+    if (message.contains('weak-password')) {
+      return 'Password is too weak. Use at least 6 characters.';
+    }
+    if (message.contains('permission-denied')) {
+      return 'Firestore denied this request. Check Firebase rules.';
+    }
+    return 'Sign in failed: $message';
   }
 
   void _showForgotPasswordInfo() {
@@ -368,8 +409,9 @@ class _AuthScreenState extends State<AuthScreen> {
                 ButtonSegment(value: false, label: Text('Sign up')),
               ],
               selected: {_isLogin},
-              onSelectionChanged: (value) =>
-                  setState(() => _isLogin = value.first),
+              onSelectionChanged: _isSubmitting
+                  ? null
+                  : (value) => setState(() => _isLogin = value.first),
             ),
             const SizedBox(height: 20),
             TextField(
@@ -420,12 +462,17 @@ class _AuthScreenState extends State<AuthScreen> {
               ),
             ),
             FilledButton(
-              onPressed: _submit,
-              child: Text(_isLogin ? 'Log in' : 'Create account'),
+              onPressed: _isSubmitting ? null : _submit,
+              child: _isSubmitting
+                  ? const SizedBox.square(
+                      dimension: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : Text(_isLogin ? 'Log in' : 'Create account'),
             ),
             const SizedBox(height: 8),
             OutlinedButton(
-              onPressed: _submit,
+              onPressed: _isSubmitting ? null : _submit,
               child: const Text('Continue with test account'),
             ),
             const SizedBox(height: 24),
