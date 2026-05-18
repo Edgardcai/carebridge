@@ -9,9 +9,9 @@ const password = process.env.DEMO_PASSWORD || 'CareBridge123!';
 const authBase = 'https://identitytoolkit.googleapis.com/v1';
 let patientId = 'demo_patient_elena';
 
-async function postJson(url, body, token) {
+async function postJson(url, body, token, method = 'POST') {
   const response = await fetch(url, {
-    method: 'POST',
+    method,
     headers: {
       'Content-Type': 'application/json',
       ...(token ? {Authorization: `Bearer ${token}`} : {}),
@@ -91,10 +91,8 @@ function fields(data) {
 
 function writeDocument(path, data) {
   return {
-    update: {
-      name: `projects/${projectId}/databases/(default)/documents/${path}`,
-      fields: fields(data),
-    },
+    path,
+    data,
   };
 }
 
@@ -345,26 +343,24 @@ function buildWrites(uid) {
   return writes;
 }
 
-async function batchWrite(label, writes, token) {
-  const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents:batchWrite`;
-  let result;
+async function writeOne({path, data}, token) {
+  const url =
+    `https://firestore.googleapis.com/v1/projects/${projectId}` +
+    `/databases/(default)/documents/${path}`;
   try {
-    result = await postJson(url, {writes}, token);
+    await postJson(url, {fields: fields(data)}, token, 'PATCH');
   } catch (error) {
-    error.message = `${label}: ${error.message}`;
+    error.message = `${path}: ${error.message}`;
     throw error;
-  }
-  const failed = (result.status || []).filter((status) => status.code);
-  if (failed.length) {
-    throw new Error(`${label}: Firestore writes failed: ${JSON.stringify(failed)}`);
   }
 }
 
 async function main() {
   const auth = await authenticate();
   const writes = buildWrites(auth.localId);
-  await batchWrite('user and patient', writes.slice(0, 2), auth.idToken);
-  await batchWrite('patient child data', writes.slice(2), auth.idToken);
+  for (const write of writes) {
+    await writeOne(write, auth.idToken);
+  }
 
   console.log('Demo account is ready:');
   console.log(`  Email:    ${email}`);
