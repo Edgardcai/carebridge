@@ -21,6 +21,9 @@ firebase_options.dart
 google-services.json
 GoogleService-Info.plist
 
+# Moodle coursework deliverables (local only — see README)
+Submission/
+
 # Accidental duplicate plugin lockfiles (Finder copies)
 .flutter-plugins-dependencies 2
 .flutter-plugins-dependencies 3

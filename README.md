@@ -1,66 +1,87 @@
 # CareBridge
 
-CareBridge is a Flutter Android MVP for post-discharge recovery management.
-It focuses on recovery reminders, symptom logging, family coordination, and
-handoff points for Firebase, OCR, local notifications, photo upload, and
-trend charts.
+CareBridge is a Flutter Android MVP for **post-discharge recovery management**.
+It helps patients and family carers turn discharge instructions into daily tasks,
+local reminders, symptom logs, and a read-only family overview.
 
-The app includes role A's presentation and state layer, role B's Firebase
-repository/storage integration, and role C's ML Kit OCR, local notifications,
-and symptom chart.
+**Important:** CareBridge is a logging and reminder tool only. It does not
+provide medical advice, diagnosis, or treatment recommendations.
 
-## Current Status
+## Features
 
-Completed in this version:
+- **Onboarding:** splash, legal disclaimer, email sign-in / sign-up
+- **Patient profiles:** create, edit, switch patients; recovery day on dashboard
+- **Tasks:** medication, visit, rehab, and note types; CRUD, repeat rules,
+  assignee, mark complete; pending / completed views
+- **OCR import:** scan discharge documents (camera or gallery); review and edit
+  extracted lines before creating tasks (never auto-saved)
+- **Symptoms:** daily pain (0–10), temperature, notes, photos; 7-day trend chart;
+  recovery timeline
+- **Family hub:** read-only summary of progress, responsibilities, and latest log
+- **Settings:** large text, notification toggle, local notification self-test,
+  sign out
 
-- Flutter Android project scaffold with package id `hk.hku.carebridge`.
-- Provider-based state management through `CareStore`.
-- Repository abstraction through `CareRepository`.
-- Demo in-memory backend through `DemoCareRepository`, so the app can run
-  when Firebase project config is not provided.
-- **Role B (Firebase):** `FirebaseCareRepository` for Auth, Firestore patient /
-  task / symptom / family data, selected-patient persistence, and OCR-to-task
-  creation. `FirebaseStoragePort` uploads discharge scans and symptom photos.
-- App routes and navigation flow:
-  splash, legal disclaimer, auth, patient create/list, home dashboard, task
-  list/detail/create-edit, OCR review, symptom log, timeline, family hub, and
-  settings.
-- Demo data for patients, family members, care tasks, OCR candidates, and
-  symptom logs.
-- Integration contracts for Firebase, ML Kit OCR, local notifications,
-  photo storage, and `fl_chart`.
-- Supporting docs for final report, requirement trace, and demo video script.
-- **Role C (native / algorithm):** ML Kit text recognition in `MlKitOcrPort`
-  (line normalization, keyword classification, simple time parsing) wired on
-  `OcrReviewScreen` with camera and gallery via `image_picker`.
-- Android local notifications via `LocalNotificationPort` (`flutter_local_notifications`,
-  `timezone`, exact idle scheduling) integrated in `CareStore` (permission on load,
-  schedule / cancel / reschedule with task and patient changes).
-- Symptom **past 7 days** pain trend chart using `fl_chart` in `MiniTrendChart`.
-- `LocalStoragePort` keeps picked photos local when Firebase config is absent;
-  Firebase mode stores download URLs through `FirebaseStoragePort`.
+## Architecture
 
-Not completed yet:
+```text
+Presentation (screens.dart, app_router.dart)
+        ↓
+CareStore (Provider / ChangeNotifier)
+        ↓
+CareRepository                    Integration ports
+  ├─ FirebaseCareRepository         ├─ OcrPort → MlKitOcrPort
+  └─ DemoCareRepository (fallback)  ├─ NotificationPort → LocalNotificationPort
+                                    └─ StoragePort → FirebaseStoragePort | LocalStoragePort
+```
 
-- Production Firebase project files / deployed security rules. The committed
-  `lib/firebase_options.dart` is a safe dart-define based template.
+**Startup** (`lib/main.dart`):
 
-## Tech Stack
+1. Initialize `LocalNotificationPort` before `runApp`.
+2. `_initializeBackend()` tries `Firebase.initializeApp` with
+   `DefaultFirebaseOptions.currentPlatform`.
+3. On success: `FirebaseCareRepository` + `FirebaseStoragePort`.
+4. On failure: `DemoCareRepository` (seeded in-memory data) +
+   `LocalStoragePort` (local photo paths).
+5. Inject `MlKitOcrPort`, notification port, and storage port into `CareStore`,
+   then `load()`.
 
-- Flutter `3.41.9`
-- Dart `3.11.5`
-- Android target via Flutter's generated Android wrapper
-- State management: `provider`
-- Current data source: Firebase-first repository with demo fallback
+UI code calls `CareStore` only—not Firebase or ML Kit plugins directly.
 
-Firebase dependencies are listed in `pubspec.yaml` (`firebase_core`,
-`firebase_auth`, `cloud_firestore`, `firebase_storage`). Role C dependencies
-are also listed (`google_mlkit_text_recognition`, `flutter_local_notifications`,
-`fl_chart`, `image_picker`, `uuid`, `timezone`).
+## Current status
 
-## Run Locally
+| Area | Status |
+| --- | --- |
+| UI, navigation, state | Complete |
+| Firebase Auth, Firestore, Storage | Implemented (`firebase_care_repository.dart`) |
+| Demo fallback backend | Implemented when Firebase init fails |
+| ML Kit OCR (Latin), mandatory review | Implemented |
+| Local task notifications | Implemented |
+| 7-day symptom chart (`fl_chart`) | Implemented |
+| Symptom / discharge photos | Implemented (`image_picker` + `StoragePort`) |
 
-From a fresh clone:
+**Known limitations** (see also `docs/requirements_trace.md`):
+
+- Firestore / Storage **security rules are not committed** in this repo; apply
+  equivalent rules in the Firebase Console for shared testing.
+- OCR uses **Latin script only**; Chinese or handwritten discharge sheets need
+  manual editing on the review screen.
+- Legal disclaimer acceptance is **not persisted** across app restarts.
+- Task status **missed** appears in UI/filters and demo seed data only; users
+  cannot mark a task as missed in the app.
+- Family **multi-account invite** is limited in UI; Firestore `sharedWith` model
+  is ready on the backend side.
+
+## Tech stack
+
+- Flutter `3.41.x` and Dart `3.11.x` (recommended dev environment; `pubspec.yaml`
+  allows Dart `>=3.4.0 <4.0.0`)
+- Android package `hk.hku.carebridge`
+- State: `provider`
+- Backend: `firebase_core`, `firebase_auth`, `cloud_firestore`, `firebase_storage`
+- Native: `google_mlkit_text_recognition`, `flutter_local_notifications`,
+  `timezone`, `fl_chart`, `image_picker`, `uuid`
+
+## Run locally
 
 ```bash
 git clone https://github.com/Edgardcai/carebridge.git
@@ -69,129 +90,161 @@ flutter pub get
 flutter run
 ```
 
-The app can run in demo fallback mode without Firebase config. To use the real
-shared backend, set up Firebase with the steps in
-[Firebase Setup](#firebase-setup).
+- With valid Firebase config (committed `lib/firebase_options.dart` for project
+  `carebridge7506`), the app uses the cloud backend.
+- If initialization fails, the app **falls back to demo mode** automatically
+  (check debug console for `CareBridge backend:` messages).
 
-Recommended emulator:
-
-```bash
-flutter emulators --launch CareBridge_API36
-flutter run -d emulator-5556
-```
-
-The emulator id can change between launches. If `emulator-5556` is not found,
-run:
+List devices and pick one:
 
 ```bash
-flutter devices
-```
-
-Then choose the active Android device id shown by Flutter.
-
-If Flutter cannot connect to the debug service, make sure localhost bypasses
-the proxy:
-
-```bash
-export NO_PROXY="localhost,127.0.0.1,::1"
-export no_proxy="$NO_PROXY"
-```
-
-## Try on an Android Phone
-
-Install requirements:
-
-- Flutter SDK
-- Android Studio
-- A real Android phone with Developer options and USB debugging enabled
-
-Run directly on a connected phone:
-
-```bash
-cd carebridge
-flutter pub get
 flutter devices
 flutter run -d <device-id>
 ```
 
-Example:
+Quality checks:
 
 ```bash
-flutter run -d 10AE671KEH0047E
+flutter analyze
+flutter test
 ```
 
-Build and install a debug APK:
+On Windows, if the debug service cannot attach through a proxy:
 
-```bash
-flutter build apk --debug
-flutter install -d <device-id>
+```powershell
+$env:NO_PROXY = "localhost,127.0.0.1,::1"
 ```
 
-The debug APK is generated at:
+## Firebase setup
 
-```text
-build/app/outputs/flutter-apk/app-debug.apk
-```
-
-For a simple tester handoff, build a release APK and upload it to GitHub
-Releases or send it through a trusted channel:
-
-```bash
-flutter build apk --release
-```
-
-The release APK is generated at:
-
-```text
-build/app/outputs/flutter-apk/app-release.apk
-```
-
-This MVP currently uses the debug signing config for release builds, so the APK
-is suitable for coursework/demo testing, not Play Store publication.
-
-## Firebase Setup
-
-The project can run without Firebase, but cloud sync requires a Firebase
-project. The Android application id is:
+Android application id:
 
 ```text
 hk.hku.carebridge
 ```
 
-Recommended setup:
+To reconfigure or use your own project:
 
 ```bash
-cd carebridge
-npm install -g firebase-tools
 dart pub global activate flutterfire_cli
-export PATH="$PATH:$HOME/.pub-cache/bin"
-firebase login
-flutterfire configure --project=<firebase-project-id> --platforms=android
+flutterfire configure --project=<your-project-id> --platforms=android
 ```
 
-For the current project:
+For this coursework repo:
 
 ```bash
 flutterfire configure --project=carebridge7506 --platforms=android
 ```
 
-Enable these Firebase products in the Firebase Console:
+In Firebase Console, enable:
 
-- Authentication: enable Email/Password sign-in.
-- Firestore Database: create a database and publish rules.
-- Firebase Storage: optional for cloud photo upload; the app falls back to
-  local photo paths if Storage is unavailable.
+- **Authentication** — Email/Password
+- **Firestore** — database + security rules (see `docs/backend_integration.md`)
+- **Storage** — for cloud photo URLs (optional; app keeps local paths on failure)
 
-Firebase config notes:
+Config files:
 
-- `lib/firebase_options.dart` is generated by FlutterFire and is safe to keep
-  with this coursework project.
-- `android/app/google-services.json` is ignored by Git and should stay local.
-- `firebase.json` records FlutterFire project mapping and can be committed.
+| File | Notes |
+| --- | --- |
+| `lib/firebase_options.dart` | FlutterFire Android options (committed) |
+| `android/app/google-services.json` | Local only; **gitignored** |
+| `firebase.json` | FlutterFire project mapping (committed) |
 
-## Team Development
+## Build APK
 
-For teammates joining the app development:
+Debug:
+
+```bash
+flutter build apk --debug
+# build/app/outputs/flutter-apk/app-debug.apk
+```
+
+Release (coursework/demo signing, not Play Store ready):
+
+```bash
+flutter build apk --release
+# build/app/outputs/flutter-apk/app-release.apk
+```
+
+Install on a connected device:
+
+```bash
+flutter install -d <device-id>
+```
+
+## Project structure
+
+```text
+lib/
+  main.dart                          # Backend bootstrap, CareStore wiring
+  app.dart                           # MaterialApp, theme, routes
+  firebase_options.dart
+  core/routing/app_router.dart
+  core/theme/app_theme.dart
+  features/care/
+    application/care_store.dart
+    data/care_repository.dart
+    data/demo_care_repository.dart
+    data/firebase_care_repository.dart
+    domain/models.dart
+    integrations/
+      integration_ports.dart
+      firebase_storage_port.dart
+      local_storage_port.dart
+      mlkit_ocr_port.dart
+      local_notification_port.dart
+    presentation/screens.dart
+
+docs/
+  requirements_trace.md              # Requirement ↔ implementation matrix
+  backend_integration.md             # Firestore, Storage, fallback behaviour
+  native_integration.md              # OCR, notifications, chart, device testing
+
+scripts/
+  seed_demo_account.mjs              # Optional Firebase demo data seed (Node)
+
+android/                             # Manifest, permissions, notification receivers
+test/widget_test.dart                # Splash smoke test
+```
+
+### Moodle submission (not in Git)
+
+Create a local `Submission/` folder at the repo root for coursework upload to
+Moodle. **Do not commit this folder** — it is listed in `.gitignore`.
+
+| File | Purpose |
+| --- | --- |
+| `DocumentFile.pdf` | Final project report |
+| `IntroductoryVideo.mp4` | App introduction video |
+| `Peer_Review.docs` | Peer review form |
+
+Keep these files on your machine only; submit them through Moodle, not via this
+repository.
+
+## Main `CareStore` actions
+
+- `signInDemo`, `signOut`
+- `savePatient`, `selectPatient`
+- `saveTask`, `deleteTask`, `markTaskStatus`
+- `saveSymptomLog`
+- `scanOcrCandidatesFromImage`, `createTasksFromOcr`
+- `setLargeText`, `setNotificationsEnabled`
+
+Repository contract: `lib/features/care/data/care_repository.dart` (implemented
+for both Firebase and demo backends).
+
+## Android notes
+
+Permissions in `android/app/src/main/AndroidManifest.xml`:
+
+- `CAMERA`, `POST_NOTIFICATIONS`, `SCHEDULE_EXACT_ALARM`, `READ_MEDIA_IMAGES`,
+  `RECEIVE_BOOT_COMPLETED`
+
+Scheduled notifications also require Flutter Local Notifications receivers
+(already registered). If timed reminders fail but instant test notifications
+work, see the **Troubleshooting** section in `docs/native_integration.md`.
+
+## Team development
 
 ```bash
 git clone https://github.com/Edgardcai/carebridge.git
@@ -202,37 +255,13 @@ flutter analyze
 flutter test
 ```
 
-Use a personal branch for each task:
+Use feature branches, run `flutter analyze` / `flutter test` before push, and
+open PRs to `main`.
 
-```bash
-git switch -c <name>/<feature>
-```
-
-Before starting work, update from `main`:
-
-```bash
-git fetch origin
-git rebase origin/main
-```
-
-After finishing:
-
-```bash
-flutter analyze
-flutter test
-git status
-git add .
-git commit -m "Describe the change"
-git push -u origin <name>/<feature>
-```
-
-Then open a pull request into `main`, or coordinate with the team lead before
-pushing directly to `main`.
-
-Do not commit local secrets, device files, or build outputs. In particular,
-keep these out of Git:
+Do not commit:
 
 ```text
+Submission/
 android/app/google-services.json
 build/
 .dart_tool/
@@ -240,226 +269,35 @@ build/
 *.iml
 ```
 
-## Useful Commands
-
-```bash
-flutter analyze
-flutter test
-flutter build apk --debug
-```
-
-If Android files are missing after clone:
+If the Android folder is missing after clone:
 
 ```bash
 flutter create --platforms=android .
 ```
 
-When Flutter asks whether to overwrite files, keep the existing `lib/`,
-`pubspec.yaml`, `README.md`, and `docs/` files.
+Keep existing `lib/`, `pubspec.yaml`, `README.md`, and `docs/` when prompted.
 
-## Project Structure
+## Documentation
 
-```text
-lib/
-  main.dart
-  app.dart
-  core/
-    routing/app_router.dart
-    theme/app_theme.dart
-  features/care/
-    application/care_store.dart
-    data/care_repository.dart
-    data/demo_care_repository.dart
-    domain/models.dart
-    integrations/integration_ports.dart
-    presentation/screens.dart
+| Document | Purpose |
+| --- | --- |
+| `docs/requirements_trace.md` | MVP requirements mapped to code |
+| `docs/backend_integration.md` | Firebase schema, bootstrap, verification |
+| `docs/native_integration.md` | OCR, notifications, chart, photos, device testing |
 
-docs/
-  backend_integration.md
-  native_integration.md
-  requirements_trace.md
-  final_report_outline.md
-  demo_video_script.md
+Moodle deliverables (`DocumentFile.pdf`, `IntroductoryVideo.mp4`,
+`Peer_Review.docs`) live in a local `Submission/` folder — see
+[Moodle submission](#moodle-submission-not-in-git) above.
 
-android/
-  Flutter Android wrapper and app manifest.
-```
-
-Key files:
-
-- `lib/main.dart`: creates `CareStore` and injects the current repository.
-- `lib/features/care/application/care_store.dart`: app state and UI actions.
-- `lib/features/care/data/care_repository.dart`: role B's main data contract.
-- `lib/features/care/data/demo_care_repository.dart`: temporary local data.
-- `lib/features/care/domain/models.dart`: shared models and enums.
-- `lib/features/care/integrations/integration_ports.dart`: Firebase/native
-  feature ports for role B and role C.
-- `lib/features/care/presentation/screens.dart`: all MVP UI screens.
-- `lib/core/routing/app_router.dart`: route names and navigation mapping.
-
-## Role A Handoff
-
-Role A has already connected the static UI to a state/repository layer. Most
-screens call `CareStore` instead of holding isolated dummy state. The app can
-therefore keep the current presentation layer while role B replaces storage
-and role C replaces native integrations.
-
-Main UI actions already available:
-
-- `CareStore.signInDemo`
-- `CareStore.savePatient`
-- `CareStore.selectPatient`
-- `CareStore.saveTask`
-- `CareStore.deleteTask`
-- `CareStore.markTaskStatus`
-- `CareStore.saveSymptomLog`
-- `CareStore.createTasksFromOcr`
-
-## Role B: Firebase Integration
-
-Role B implements Firebase behind `CareRepository` and keeps the UI mostly
-unchanged.
-
-Current startup path:
-
-```dart
-// lib/main.dart
-final backend = await _initializeBackend();
-final store = CareStore(backend.repository, storagePort: backend.storagePort)..load();
-```
-
-Firebase is enabled when `DefaultFirebaseOptions.currentPlatform` contains real
-project values. The recommended setup is `flutterfire configure`; the committed
-template also supports dart-defines:
-
-```bash
-flutter run \
-  --dart-define=FIREBASE_PROJECT_ID=your-project-id \
-  --dart-define=FIREBASE_MESSAGING_SENDER_ID=1234567890 \
-  --dart-define=FIREBASE_ANDROID_API_KEY=your-android-api-key \
-  --dart-define=FIREBASE_ANDROID_APP_ID=1:1234567890:android:abcdef \
-  --dart-define=FIREBASE_STORAGE_BUCKET=your-project-id.appspot.com
-```
-
-Minimum repository methods to implement:
-
-```dart
-abstract class CareRepository {
-  Future<CareBundle> load();
-  Future<AppUser> signInDemo({
-    required String email,
-    required String displayName,
-    String? password,
-    bool createAccount = false,
-  });
-  Future<void> signOut();
-  Future<PatientProfile> upsertPatient(PatientProfile patient);
-  Future<void> selectPatient(String patientId);
-  Future<CareTask> upsertTask(CareTask task);
-  Future<void> deleteTask(String taskId);
-  Future<CareTask> markTaskStatus(String taskId, TaskStatus status);
-  Future<SymptomLog> upsertSymptomLog(SymptomLog log);
-  Future<List<CareTask>> createTasksFromOcrCandidates(
-    List<OcrCandidate> candidates,
-  );
-}
-```
-
-Implemented Role B path:
-
-1. Firebase packages are in `pubspec.yaml`.
-2. Android Firebase initialization uses `DefaultFirebaseOptions`.
-3. Firebase implementation lives in
-   `lib/features/care/data/firebase_care_repository.dart`.
-4. Storage upload lives in
-   `lib/features/care/integrations/firebase_storage_port.dart`.
-5. `lib/main.dart` chooses Firebase when configured and demo fallback otherwise.
-6. Run `flutter analyze`, `flutter test`, and one Android smoke test after
-   adding real Firebase project values.
-
-Detailed Firestore schema, storage paths, and security rule intent are in:
+## App flow (quick reference)
 
 ```text
-docs/backend_integration.md
+Splash → Legal disclaimer → Auth → Patient (if none) → Home
+Bottom nav: Home | Tasks | Log | Family
+Home → Scan doc → OCR review → Create tasks
+Log → symptom entry, 7-day chart → Timeline
+Settings (Home or Log): notifications, large text, sign out
 ```
 
-## Role C: OCR, Notifications, Chart, Photos
-
-Role C should implement native and algorithm features behind these ports:
-
-```dart
-abstract class OcrPort {
-  Future<List<OcrCandidate>> extractTaskCandidates({
-    required String patientId,
-    required String localImagePath,
-  });
-}
-
-abstract class NotificationPort {
-  Future<void> requestPermission();
-  Future<void> scheduleTaskReminder(CareTask task);
-  Future<void> cancelTaskReminder(String taskId);
-  Future<void> rescheduleAll(List<CareTask> tasks);
-}
-
-abstract class StoragePort {
-  Future<String> uploadDischargeImage({
-    required String patientId,
-    required String localPath,
-  });
-
-  Future<String> uploadSymptomPhoto({
-    required String patientId,
-    required DateTime logDate,
-    required String localPath,
-  });
-}
-```
-
-Expected integration points:
-
-- ML Kit OCR:
-  call `OcrPort.extractTaskCandidates`, show the result on `OcrReviewScreen`,
-  then call `CareStore.createTasksFromOcr` only after user confirmation.
-- Local notifications:
-  schedule after `CareStore.saveTask`, cancel after task completion/delete,
-  and reschedule when task time/repeat rule changes.
-- Chart:
-  `MiniTrendChart` in `lib/features/care/presentation/screens.dart` uses
-  `fl_chart`; keep the constructor `MiniTrendChart({required List<SymptomLog> logs})`.
-- Photos:
-  use `image_picker`, upload with `StoragePort.uploadSymptomPhoto`, save the
-  returned URL/path in `SymptomLog.photoUrls`.
-
-Detailed OCR, notification, chart, and photo requirements are in:
-
-```text
-docs/native_integration.md
-```
-
-Role C handoff for teammates (Chinese, ports, manifest, test steps):
-
-```text
-docs/role_c_integration.md
-```
-
-## Android Notes
-
-The manifest already declares permissions expected by role C:
-
-```xml
-<uses-permission android:name="android.permission.CAMERA" />
-<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-<uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
-<uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
-```
-
-If `flutter_local_notifications`, ML Kit, or Firebase requires extra Android
-manifest metadata, receivers, services, or Gradle plugins, add them under
-`android/app`.
-
-## Documentation for Submission
-
-- Final report draft outline: `docs/final_report_outline.md`
-- Demo video script: `docs/demo_video_script.md`
-- Requirement trace: `docs/requirements_trace.md`
+For requirement-level notes (e.g. missed tasks, legal persistence), see
+`docs/requirements_trace.md`.

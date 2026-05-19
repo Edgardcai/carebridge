@@ -1,42 +1,76 @@
-# Role B Backend Integration Contract
+# Backend Integration (Firebase)
 
-This app currently runs with `DemoCareRepository`. Role B should replace it
-with a Firebase implementation while keeping the UI and `CareStore` unchanged.
+CareBridge keeps UI and state in `CareStore` / presentation screens unchanged.
+All persistence goes through `CareRepository` and `StoragePort`.
 
-## Swap point
+## Current runtime behaviour
 
 File: `lib/main.dart`
 
+1. `LocalNotificationPort.initialize()` runs before `runApp` (3 s timeout; failures are logged, app still starts).
+2. `_initializeBackend()` calls `Firebase.initializeApp` when `Firebase.apps` is empty (8 s timeout).
+3. On success: `FirebaseCareRepository` + `FirebaseStoragePort` (debug: `CareBridge backend: Firebase enabled.`).
+4. On failure: `DemoCareRepository` + `LocalStoragePort` (debug: `CareBridge backend: using demo backend.`).
+
 ```dart
-final store = CareStore(DemoCareRepository())..load();
+Future<_CareBackend> _initializeBackend() async {
+  try {
+    if (Firebase.apps.isEmpty) {
+      await Firebase.initializeApp(
+        options: DefaultFirebaseOptions.currentPlatform,
+      ).timeout(const Duration(seconds: 8));
+    }
+    return _CareBackend(
+      repository: FirebaseCareRepository(),
+      storagePort: FirebaseStoragePort(),
+    );
+  } catch (error, stackTrace) {
+    // logged; fall through to demo backend
+  }
+  return _CareBackend(
+    repository: DemoCareRepository(),
+    storagePort: LocalStoragePort(),
+  );
+}
 ```
 
-Replace with:
+Implementation files:
 
-```dart
-await Firebase.initializeApp(
-  options: DefaultFirebaseOptions.currentPlatform,
-);
-final store = CareStore(FirebaseCareRepository(...ports...))..load();
-```
+- `lib/features/care/data/firebase_care_repository.dart`
+- `lib/features/care/integrations/firebase_storage_port.dart`
+- `lib/features/care/data/demo_care_repository.dart` (fallback)
+- `lib/firebase_options.dart` (FlutterFire Android config; project `carebridge7506`)
+- `scripts/seed_demo_account.mjs` (optional Node script to seed Firestore demo data; not used by the app at runtime)
 
-Do not change presentation screens for Firebase work. Keep all backend behavior
-behind `CareRepository` and the ports in
-`lib/features/care/integrations/integration_ports.dart`.
+Do not add Firebase calls from presentation code. Extend behaviour via
+`CareRepository` and the **active** ports in
+`lib/features/care/integrations/integration_ports.dart` (`StoragePort`,
+`OcrPort`, `NotificationPort`, `DisposableIntegration`).
+
+**Unused stubs in `integration_ports.dart`:** `AuthPort`, `PatientDataPort`,
+`TaskDataPort`, `SymptomDataPort`, and `FamilyDataPort` are early team placeholders.
+Auth and Firestore access are implemented inside `FirebaseCareRepository` instead;
+do not wire UI to these abstract classes unless you refactor the repository.
 
 ## Firebase services
 
-- Auth: email/password sign in and sign up.
-- Firestore: patients, tasks, symptom logs, family member permissions.
-- Storage: discharge images and symptom photos.
+| Service | Use |
+| --- | --- |
+| Authentication | Email/password sign-in and sign-up (`AuthScreen` → `CareRepository.signInDemo`) |
+| Firestore | Patients, tasks, symptom logs, family members, selected patient id on user doc |
+| Storage | Discharge scan images (OCR source), symptom photos |
 
-## Suggested Firestore structure
+## Firestore structure (as implemented)
+
+Fields below match `FirebaseCareRepository` read/write helpers.
 
 ```text
 users/{uid}
-  displayName: string
   email: string
-  createdAt: timestamp
+  displayName: string
+  selectedPatientId: string|null   # set via selectPatient()
+  createdAt: timestamp              # on first create
+  updatedAt: timestamp
 
 patients/{patientId}
   ownerUid: string
@@ -46,8 +80,8 @@ patients/{patientId}
   conditionCategory: string
   mainDepartment: string
   notes: string
-  emergencyContact: map
-  sharedWith: array<uid>
+  emergencyContact: map { name, relationship, phone }
+  sharedWith: array<uid>            # empty array on create
   createdAt: timestamp
   updatedAt: timestamp
 
@@ -55,69 +89,50 @@ patients/{patientId}/familyMembers/{memberId}
   userUid: string|null
   displayName: string
   relationship: string
-  role: "patient" | "primaryCarer" | "familyViewer"
+  role: string                        # patient | primaryCarer | familyViewer (.name)
   readOnly: boolean
-  invitedEmail: string|null
   createdAt: timestamp
 
 patients/{patientId}/tasks/{taskId}
-  title: string
-  details: string
-  type: "medication" | "visit" | "rehab" | "note"
-  status: "pending" | "completed" | "missed"
-  scheduledAt: timestamp
-  repeatRule: "none" | "daily" | "everyTwoDays" | "everyThreeDays" | "weekly" | "twiceDaily" | "threeTimesDaily"
-  repeatDurationDays: number
-  reminderMinutesOfDay: array<number>
-  remindMinutesBefore: number
-  assigneeId: string|null
-  assigneeName: string
-  sourceLabel: string|null
-  sourceImageUrl: string|null
-  completedAt: timestamp|null
-  createdAt: timestamp
-  updatedAt: timestamp
+  patientId, title, details, type, status, scheduledAt
+  repeatRule, repeatDurationDays, reminderMinutesOfDay, remindMinutesBefore
+  assigneeId, assigneeName, sourceLabel, sourceImageUrl
+  completedAt, createdAt, updatedAt
 
-patients/{patientId}/symptomLogs/{yyyyMMdd_HHmmss_microseconds}
-  date: timestamp
-  painLevel: number
-  temperatureC: number
-  notes: string
-  photoUrls: array<string>
-  createdAt: timestamp
-  updatedAt: timestamp
-
-patients/{patientId}/ocrImports/{scanId}
-  imageUrl: string
-  rawText: string
-  candidates: array<map>
-  createdByUid: string
-  createdAt: timestamp
+patients/{patientId}/symptomLogs/{logId}
+  patientId, date, painLevel, temperatureC, notes, photoUrls
+  createdAt, updatedAt
 ```
+
+**Not written by the app today**
+
+| Item | Where it lives |
+| --- | --- |
+| OCR candidate list after scan | `CareStore` / `CareBundle.ocrCandidates` until user confirms or leaves the flow |
+| `familyMembers.invitedEmail` | May appear in manual Console edits or `scripts/seed_demo_account.mjs`; not in `FamilyMember` model or repository serializers |
+| Future `ocrImports` subcollection | Optional; not required for MVP |
+
+**Sharing model:** `patients.sharedWith` lists uids that may read the patient tree.
+`familyMembers.readOnly` is stored per member; write enforcement for viewers is
+primarily in the app today (Firestore rules should mirror owner vs shared read).
 
 ## Storage paths
 
+Implemented in `FirebaseStoragePort`:
+
 ```text
-patients/{patientId}/discharge_scans/{scanId}.jpg
-patients/{patientId}/symptom_photos/{yyyyMMdd}/{photoId}.jpg
+patients/{patientId}/discharge_scans/{microsecondsSinceEpoch}.jpg
+patients/{patientId}/symptom_photos/{yyyyMMdd}/{microsecondsSinceEpoch}.jpg
 ```
 
-Store public download URLs only if the rules are locked to authenticated users.
-Otherwise store `gs://` paths and resolve URLs in the app.
+Store download URLs in task `sourceImageUrl` and `SymptomLog.photoUrls` when
+using Firebase Storage. Restrict access with authenticated Storage rules.
 
-## Security rule intent
+## Security rules
 
-Minimum demo rule behavior:
-
-- Patient owner can read/write the patient and all subcollections.
-- Family users in `sharedWith` can read patient summary, tasks, logs, and
-  family members.
-- Read-only family users cannot edit tasks/logs.
-- Primary carers may mark tasks complete if the team chooses to allow it.
-- No user can read another patient unless `ownerUid == request.auth.uid` or
-  `request.auth.uid in sharedWith`.
-
-Sketch:
+**This repository does not include deployed `firestore.rules` or
+`storage.rules` files.** The sketch below is the intended policy for coursework
+demo; apply equivalent rules in the Firebase Console before shared testing.
 
 ```js
 function signedIn() {
@@ -141,45 +156,54 @@ function canWritePatient(patientId) {
 }
 ```
 
-## Required repository methods
+Intended behaviour:
 
-Implement all methods in `CareRepository`:
+- Owner: read/write patient document and all subcollections.
+- Users in `sharedWith`: read patient, tasks, logs, family members.
+- `readOnly` family members: read-only (enforced in app + rules where configured).
+- No access to other owners' patients.
 
-- `load()`: load current user, patients, selected/default patient data.
-- `signInDemo(...)`: can be renamed internally, but keep the app-facing method
-  until UI auth is finalized.
-- `signOut()`.
-- `upsertPatient(...)`.
-- `selectPatient(...)`: may persist selected patient id locally.
-- `upsertTask(...)`.
-- `deleteTask(...)`.
-- `markTaskStatus(...)`.
-- `upsertSymptomLog(...)`.
-- `createTasksFromOcrCandidates(...)`.
+## Repository methods
+
+All methods in `lib/features/care/data/care_repository.dart` are implemented for
+Firebase and demo backends:
+
+| Method | Purpose |
+| --- | --- |
+| `load()` | Current user, patients, tasks, logs, family; restore selected patient |
+| `signInDemo(...)` | Sign in or create account (name kept for UI compatibility) |
+| `signOut()` | Clear auth session |
+| `upsertPatient(...)` | Create/update patient; default primary-carer family row on create |
+| `selectPatient(...)` | Persist `selectedPatientId` on `users/{uid}` (Firebase) |
+| `upsertTask(...)` | Create/update task |
+| `deleteTask(...)` | Remove task |
+| `markTaskStatus(...)` | Update status; set/clear `completedAt` when completed |
+| `upsertSymptomLog(...)` | Create/update log (deterministic id on new Firebase logs) |
+| `createTasksFromOcrCandidates(...)` | Create tasks from user-confirmed OCR rows |
 
 ## Mapping notes
 
-- Use deterministic symptom log ids like `yyyyMMdd_HHmmss_microseconds` so the
-  log chart can show multiple records from the same day.
-- Store enum values by `name`, for example `TaskStatus.pending.name`.
-- Store Role C repeat metadata (`repeatDurationDays`,
-  `reminderMinutesOfDay`) with each task so multi-reminder schedules survive
-  app restart.
-- Convert Firestore timestamps to local `DateTime`.
-- Keep patient profile and task CRUD working offline if Firestore persistence is
-  enabled.
-- When role C schedules notifications, call `NotificationPort.scheduleTaskReminder`
-  after task save/update.
+- New symptom log document ids: `yyyyMMdd_HHmmss_microseconds` (`_logId` in repository).
+- Store enums by `.name` (e.g. `TaskStatus.pending.name`).
+- Persist `repeatDurationDays` and `reminderMinutesOfDay` on tasks for notification rescheduling after restart.
+- Convert Firestore `Timestamp` to local `DateTime` in the repository layer.
+- After task save/update, `CareStore` calls `NotificationPort.scheduleTaskReminder`; no FCM push in MVP.
 
-## Acceptance checklist for role B
+## Manual verification checklist
 
-- Sign up creates Firebase Auth user and `users/{uid}`.
-- New patient writes Firestore document and appears after app restart.
-- Task create/edit/delete syncs to Firestore.
-- Mark completed updates `status` and `completedAt`.
-- Symptom log writes to
-  `patients/{patientId}/symptomLogs/{yyyyMMdd_HHmmss_microseconds}`.
-- A second signed-in family user can read shared patient data but cannot edit
-  when `readOnly == true`.
-- Storage upload returns a path/URL that can be shown from OCR review and log
-  photo tiles.
+| Check | Expected |
+| --- | --- |
+| Sign up | Firebase Auth user + `users/{uid}` document |
+| New patient | Appears in Firestore and after app restart |
+| Task CRUD | Documents under `patients/{id}/tasks` stay in sync |
+| Mark completed | `status` + `completedAt` updated |
+| Symptom log | Written under `symptomLogs` with photos as URLs when Storage works |
+| Shared family user | Can read when `sharedWith` contains uid; read-only members cannot edit in app |
+| Storage upload | OCR source and symptom images return usable URLs/paths in UI |
+| Firebase unavailable | App starts with demo data and local photo paths (no crash) |
+| Optional seed script | `node scripts/seed_demo_account.mjs` populates demo Firestore (see script header) |
+
+## Local setup
+
+See root `README.md` — Firebase Setup. Android application id:
+`hk.hku.carebridge`. `android/app/google-services.json` is local-only (gitignored).

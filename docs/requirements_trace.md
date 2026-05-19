@@ -1,36 +1,40 @@
-# Requirements Trace
+# Requirements Traceability
 
-Source material used:
-
-- `group20_pre_ppt.pptx`
-- `ppt_history/Copy of CareBridge_Project_Document.docx`
-- `stitch_carebridge_recovery_assistant/design_interface.md`
-- `stitch_carebridge_recovery_assistant/carebridge_design_system/DESIGN.md`
+This matrix maps MVP requirements to the current CareBridge implementation.
+Requirement sources: course project brief, team design documents, and UI
+specifications (final report: local `Submission/DocumentFile.pdf` for Moodle — not in Git; see root `README.md`).
 
 ## MVP scope mapped to implementation
 
-| Requirement | Implementation |
-| --- | --- |
-| Legal disclaimer | `LegalScreen`, settings disclaimer dialog |
-| Sign in / sign up | `AuthScreen`, demo sign-in through `CareStore` |
-| Patient profile | `PatientListScreen`, `PatientFormScreen`, `PatientProfile` |
-| Dashboard | `HomeScreen`, metrics, up next, appointment, quick actions |
-| Task CRUD | `TasksScreen`, `TaskDetailScreen`, `TaskFormScreen`, repository methods |
-| Task status | Pending/completed/missed filters and mark-complete action |
-| OCR-assisted import | `OcrReviewScreen`, `OcrCandidate`, `OcrPort` |
-| Mandatory OCR review | OCR candidates are editable and selectable before task creation |
-| Symptom log | `SymptomLogScreen`, `SymptomLog`, daily upsert logic |
-| 7-day recovery trend | `MiniTrendChart`, ready to replace with `fl_chart` |
-| Recovery timeline | `TimelineScreen`, 7-day summary |
-| Family read-only view | `FamilyHubScreen`, `FamilyMember`, Firebase rule contract |
-| Local notifications | `NotificationPort`, Android permissions, settings toggles |
-| Firebase backend | `CareRepository` abstraction and role B docs |
+| Requirement | Implementation | Notes |
+| --- | --- | --- |
+| Legal disclaimer | `LegalScreen`, disclaimer dialog in `SettingsScreen` | Acceptance is in-memory only; app shows legal screen again after restart |
+| Sign in / sign up | `AuthScreen`, `CareStore.signInDemo` → `CareRepository.signInDemo` | Firebase Email/Password when backend is Firebase; demo credentials work in fallback mode |
+| App launch and navigation | `SplashScreen` → legal → auth → patient/home; `CareShell` bottom nav (Home / Tasks / Log / Family) | Route table in `lib/core/routing/app_router.dart` |
+| Patient profile | `PatientListScreen`, `PatientFormScreen`, `PatientProfile` | Create, edit, switch selected patient |
+| Dashboard | `HomeScreen` | Recovery day, today pending/done, next visit, quick actions including Scan doc |
+| Task CRUD | `TasksScreen`, `TaskDetailScreen`, `TaskFormScreen`, repository `upsertTask` / `deleteTask` | Types: medication, visit, rehab, note; repeat rules and assignee supported |
+| Task status | Pending / completed filters; mark complete on detail and list | **Missed**: UI filter and display exist; only demo seed includes `missed` — no user action to mark missed |
+| OCR-assisted import | `OcrReviewScreen`, `OcrCandidate`, `MlKitOcrPort` | Camera and gallery via `image_picker`; Latin script only |
+| Mandatory OCR review | Editable lines, type dropdown, per-row selection before `CareStore.createTasksFromOcr` | Tasks are never created automatically from OCR |
+| Symptom log | `SymptomLogScreen`, `SymptomLog`, `CareStore.saveSymptomLog` | Daily pain (0–10), temperature, notes |
+| Symptom photos | `SymptomLogScreen` gallery pick; `StoragePort.uploadSymptomPhoto` | Firebase URL or local path fallback |
+| 7-day recovery trend | `MiniTrendChart` (`fl_chart`), `CareStore.lastSevenLogs` | Pain and temperature lines on Log tab |
+| Recovery timeline | `TimelineScreen` | Seven-day summary for follow-up context |
+| Family read-only view | `FamilyHubScreen`, `FamilyMember`, Firestore `sharedWith` / `readOnly` in `FirebaseCareRepository` | Multi-account family invite flow is limited in UI; backend model supports sharing |
+| Local notifications | `LocalNotificationPort`, `NotificationPort`, Android permissions, `SettingsScreen` toggles and test pings | Schedules pending tasks; cancel on complete/delete |
+| Settings | `SettingsScreen` | Large text, notifications on/off, sign out, notification self-test |
+| Firebase backend | `FirebaseCareRepository`, `FirebaseStoragePort`, `lib/firebase_options.dart` | **Fallback**: `DemoCareRepository` + `LocalStoragePort` if Firebase init fails |
+| Backend bootstrap | `lib/main.dart` → `_initializeBackend()` | Tries Firebase first; logs and falls back to demo on error |
 
-## Role A deliverables covered
+## Repository contract (all backends)
 
-- State management connecting static UI to a data repository.
-- Global navigation and screen-to-screen flow.
-- Interaction polishing: empty states, snackbars, mandatory OCR review, status
-  chips, quick actions, bottom navigation.
-- Backend and native integration contracts for roles B and C.
-- Final report outline and 1-2 minute demo script.
+Implemented on both `DemoCareRepository` and `FirebaseCareRepository`:
+
+- `load`, `signInDemo`, `signOut`
+- `upsertPatient`, `selectPatient`
+- `upsertTask`, `deleteTask`, `markTaskStatus`
+- `upsertSymptomLog`, `createTasksFromOcrCandidates`
+
+See `docs/backend_integration.md` for Firestore layout and
+`docs/native_integration.md` for OCR, notifications, and chart details.

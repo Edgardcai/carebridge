@@ -1,98 +1,93 @@
-# Role C Native/OCR/Chart Integration Contract
+# Native Integration (OCR, Notifications, Chart, Photos)
 
-Role C should keep UI calls stable and implement native features behind ports in
-`lib/features/care/integrations/integration_ports.dart`.
+On-device and platform features are implemented behind ports in
+`lib/features/care/integrations/integration_ports.dart`. UI calls `CareStore`
+only, not plugins directly.
+
+| Port / lifecycle | Implementation | Injected in |
+| --- | --- | --- |
+| `OcrPort` | `MlKitOcrPort` | `lib/main.dart` → `CareStore` |
+| `NotificationPort` | `LocalNotificationPort` | `lib/main.dart` → `CareStore` |
+| `StoragePort` | `FirebaseStoragePort` or `LocalStoragePort` | Chosen with repository in `_initializeBackend()` |
+| `DisposableIntegration` | `MlKitOcrPort` | Released in `CareStore.dispose()` |
+
+Firebase data layer: `docs/backend_integration.md`. Requirement mapping:
+`docs/requirements_trace.md`.
 
 ## 1. ML Kit OCR
 
-Implement `OcrPort.extractTaskCandidates`.
+**File:** `lib/features/care/integrations/mlkit_ocr_port.dart`
 
-Input:
+**User flow:** Home → Scan doc → camera or gallery → `OcrReviewScreen` → edit
+lines / types / selection → Create tasks → `CareStore.createTasksFromOcr` →
+active `CareRepository.createTasksFromOcrCandidates` (Firebase or demo).
 
-```dart
-Future<List<OcrCandidate>> extractTaskCandidates({
-  required String patientId,
-  required String localImagePath,
-});
-```
-
-Output rules:
-
-- Return candidate rows only. Do not auto-create tasks.
-- Each candidate must be editable and user-confirmed on `OcrReviewScreen`.
-- Use `confidence` from 0.0 to 1.0 when possible. If ML Kit does not provide
-  reliable confidence, use parser confidence.
-- Parse only safe operational data: medication title, appointment date/time,
-  rehab instruction, or general note.
-- Do not generate medical advice.
-
-Suggested cleaning pipeline:
+**Pipeline:**
 
 ```text
-image -> ML Kit text blocks -> normalize whitespace -> split lines
--> classify lines by keyword/time/date -> build candidates
--> user review -> CareStore.createTasksFromOcr
+image → ML Kit (Latin script) → line normalize → keyword/time classify
+→ List<OcrCandidate> → user review → repository creates CareTask rows
 ```
 
-Useful parsing hints:
+**Rules:**
 
-- Medication: line contains `mg`, `tablet`, `daily`, `after meal`, `bid`, `tid`.
-- Appointment: line contains date/time, `follow-up`, `clinic`, `doctor`, dept.
-- Rehab: line contains `walk`, `exercise`, `physio`, `stretch`, `range of motion`.
-- Note: dietary restrictions, wound care, observation reminders.
+- Return candidates only; never auto-create tasks.
+- Candidates are editable on `OcrReviewScreen` (text + Detected type).
+- `confidence` 0.0–1.0 from parser when ML Kit does not supply scores.
+- Extract operational text only (meds, appointments, rehab, notes); no medical advice.
+
+**Script:** `TextRecognitionScript.latin` only. Do not enable Chinese OCR
+without adding the matching ML Kit dependency (crash risk on some devices,
+including Huawei builds without GMS).
+
+**Parsing hints:**
+
+- Medication: `mg`, `tablet`, `daily`, `after meal`, `bid`, `tid`
+- Appointment: dates/times, `follow-up`, `clinic`, `doctor`
+- Rehab: `walk`, `exercise`, `physio`, `stretch`, `range of motion`
+- Note: diet, wound care, observation reminders
+
+**Assignee when creating tasks from OCR** (demo and Firebase backends): prefer
+`primaryCarer`, else patient / first family member, else `Unassigned`. The task
+list label “Anyone” means no specific assignee was set.
 
 ## 2. Local notifications
 
-Implement `NotificationPort`.
+**File:** `lib/features/care/integrations/local_notification_port.dart`
 
-Required behavior:
+**Initialization:** `main.dart` calls `await notificationPort.initialize()` before `runApp`.
 
-- Request Android 13+ `POST_NOTIFICATIONS` permission.
-- Schedule reminders for pending tasks only.
-- Cancel notification when task is deleted or completed.
-- Reschedule after task edit, repeat rule change, or patient switch.
-- Keep notifications local. Do not depend on server push for MVP.
+**Behaviour:**
 
-Task fields already available:
+- Request `POST_NOTIFICATIONS` and exact-alarm permission on Android.
+- Schedule reminders for **pending** tasks only.
+- Cancel on task delete or completion; reschedule on edit, patient switch, or settings toggle.
+- Local only — no FCM push in MVP.
+- Uses `zonedSchedule` with UTC mapping; falls back from `exactAllowWhileIdle` to
+  `inexactAllowWhileIdle` if exact scheduling fails.
+- Debug log prefix: `CareBridge notifications:`.
 
-```dart
-task.id
-task.title
-task.details
-task.scheduledAt
-task.repeatRule
-task.remindMinutesBefore
-task.patientId
-```
+**CareStore hooks:** `load`, `selectPatient`, `saveTask`, `deleteTask`,
+`markTaskStatus`, `setNotificationsEnabled`, `createTasksFromOcr`.
 
-Suggested notification id:
+**Android manifest** (`android/app/src/main/AndroidManifest.xml`) must include:
 
-```dart
-task.id.hashCode & 0x7fffffff
-```
+- Permissions: `CAMERA`, `POST_NOTIFICATIONS`, `SCHEDULE_EXACT_ALARM`,
+  `READ_MEDIA_IMAGES`, `RECEIVE_BOOT_COMPLETED`
+- Receivers: `ScheduledNotificationReceiver`, `ScheduledNotificationBootReceiver`
+  (with `BOOT_COMPLETED`), `ActionBroadcastReceiver`
 
-Android manifest already reserves:
+If receivers are missing, **instant test notifications may work while scheduled
+task reminders do not**.
 
-- `CAMERA`
-- `POST_NOTIFICATIONS`
-- `SCHEDULE_EXACT_ALARM`
-- `READ_MEDIA_IMAGES`
+**Settings self-test:** `SettingsScreen` — instant notification and ~5 s delayed
+test (use the delayed test in the background to distinguish from business reminders).
 
-Scheduled local notifications require receivers in
-`android/app/src/main/AndroidManifest.xml` (already added in this repo):
+## 3. Symptom trend chart (fl_chart)
 
-- `com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver`
-- `com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver`
-  (with `BOOT_COMPLETED` / `MY_PACKAGE_REPLACED` intent filters)
-- `com.dexterous.flutterlocalnotifications.ActionBroadcastReceiver`
-- Permission `RECEIVE_BOOT_COMPLETED`
+**File:** `lib/features/care/presentation/screens.dart` → `MiniTrendChart`
 
-See `docs/role_c_integration.md` for Role A/B handoff and test steps.
-
-## 3. fl_chart trend chart
-
-`MiniTrendChart` uses `fl_chart` (`LineChart`) for the last seven days of pain
-levels. Keep this public constructor stable for any future styling tweaks:
+**Data:** `CareStore.lastSevenLogs` (past 7 calendar days, oldest → newest).
 
 ```dart
 class MiniTrendChart extends StatelessWidget {
@@ -101,29 +96,62 @@ class MiniTrendChart extends StatelessWidget {
 }
 ```
 
-Expected chart:
+- Pain: Y axis 0–10 (left).
+- Temperature: second line with right-side style labels.
+- Empty state when `logs.isEmpty`.
 
-- Last 7 days, oldest to newest.
-- Pain line: 0 to 10 y-axis (left).
-- Temperature shown as a second line mapped to the same vertical space with a
-  right-axis style label (see implementation in `MiniTrendChart`).
-- Empty state remains visible when `logs.isEmpty`.
+## 4. Symptom and discharge photos
 
-## 4. Photo picking and upload
+**Symptom log:** `SymptomLogScreen` uses `image_picker` (gallery). New paths are
+uploaded in `CareStore.saveSymptomLog` via `StoragePort.uploadSymptomPhoto`;
+URLs or local paths stored in `SymptomLog.photoUrls`. Thumbnails support remove.
 
-UI currently shows photo placeholders on `SymptomLogScreen`. Integration path:
+**Discharge / OCR source:** `CareStore.scanOcrCandidatesFromImage` uploads via
+`StoragePort.uploadDischargeImage` when Storage is available.
 
-1. Use `image_picker` to choose/take photo.
-2. Upload with role B `StoragePort.uploadSymptomPhoto`.
-3. Save returned URL/path in `SymptomLog.photoUrls`.
-4. Show thumbnail, retry, and remove actions.
+**Fallback:** If Firebase Storage fails or demo backend is active, local file
+paths are kept so the UI still shows images on device.
 
-## Acceptance checklist for role C
+## Device testing procedure
 
-- OCR runs on-device and returns candidates from a real image.
-- OCR review screen still requires explicit user confirmation.
-- Local notification permission flow works on Android.
-- A task saved for the next minute triggers a local notification.
-- Completed/deleted task notifications are cancelled.
-- 7-day symptom chart renders with `fl_chart` and does not overlap labels.
-- Symptom photo add/upload failure is visible and retryable.
+Suggested order on a physical Android device:
+
+1. `flutter pub get` → `flutter run -d <device-id>` (after Manifest changes, run
+   `flutter clean` then reinstall).
+2. **Notifications:** Settings → instant test → ~5 s delayed test (optionally
+   send app to background).
+3. **OCR:** Home → Scan doc → camera or gallery → edit selection → Create tasks
+   → verify tasks on Tasks tab.
+4. **Chart:** Log tab → confirm 7-day trend renders.
+5. **Firebase (optional):** sign in with cloud backend; restart app and confirm
+   data persists; if init fails, app should fall back to demo mode without crashing.
+
+## Manual verification checklist
+
+| Check | Expected |
+| --- | --- |
+| OCR from real image | Candidates appear on review screen |
+| OCR confirmation | Tasks created only after user taps Create tasks |
+| Notification permission | Android 13+ prompt; settings test pings work |
+| Task reminder | Pending task near future time fires notification |
+| Complete/delete task | Scheduled notification cancelled |
+| 7-day chart | Renders on Log tab without label overlap |
+| Symptom photo | Pick, save, thumbnail visible; survives save when upload OK |
+
+## Troubleshooting
+
+| Symptom | Likely cause | Action |
+| --- | --- | --- |
+| Instant notification works; scheduled reminders do not | Missing notification receivers or exact-alarm permission | Verify Manifest receivers; grant alarms/notifications on Android 12+ |
+| Reminders unreliable after reboot | OEM battery restrictions | Allow background activity / disable battery optimization for the app |
+| OCR crash on some devices | Chinese script enabled without ML Kit Chinese module | Keep `TextRecognitionScript.latin` until dependency is added |
+| Poor OCR on handwritten or Chinese sheets | Latin model + rule parser limits | Edit lines on `OcrReviewScreen` before creating tasks |
+| Photo missing in cloud mode | Storage upload failed | Check debug log; local path fallback should still show on device |
+
+## Known limitations
+
+- OCR: English/Latin print; handwriting and Chinese discharge sheets need manual entry.
+- Notifications: Some OEMs restrict background alarms; user may need battery/background exemptions.
+- Photos: Upload retry UI is minimal; failed upload falls back to local path with debug log.
+- Chinese OCR: requires the ML Kit Chinese module on Android plus a deliberate script
+  change and fallback strategy; not enabled in the coursework MVP.
